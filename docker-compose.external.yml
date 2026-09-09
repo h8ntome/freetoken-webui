@@ -6,12 +6,18 @@ services:
     init: true
     ports:
       - "${WEB_BIND_ADDRESS:-0.0.0.0}:${WEB_PORT:-3000}:3000"
-    env_file: [.env]
     environment:
       FREETOKEN_MODE: external
+      FREETOKEN_EXTERNAL_URL: "${FREETOKEN_EXTERNAL_URL:-http://host.docker.internal:1919}"
       WEB_PORT: "3000"
       DATA_DIR: /data
       MODELS_DIR: /models
+      AUTH_ENABLED: "${AUTH_ENABLED:-false}"
+      ADMIN_USERNAME: "${ADMIN_USERNAME:-admin}"
+      ADMIN_PASSWORD: "${ADMIN_PASSWORD:-}"
+      SECURE_COOKIES: "${SECURE_COOKIES:-false}"
+      PUBLIC_API_BASE_URL: "${PUBLIC_API_BASE_URL:-}"
+      METRICS_INTERVAL_SECONDS: "${METRICS_INTERVAL_SECONDS:-2}"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:

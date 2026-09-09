@@ -20,7 +20,7 @@ def test_command_is_argv_and_only_allows_known_options(tmp_path: Path):
     argv = mgr._build_command(model, {"memoryRatio": .8, "moeBackend": "hybrid", "evil": "$(id)"})
     assert argv[:4] == ["ft", "serve", "--model", str(model)]
     assert "--memory-ratio" in argv and "0.8" in argv
-    assert "--moe-strategy" in argv and "hybrid" in argv
+    assert "--moe-backend" in argv and "hybrid" in argv
     assert "$(id)" not in argv
     assert model.name in argv
 

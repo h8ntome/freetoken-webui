@@ -9,7 +9,6 @@ services:
     ports:
       - "${WEB_BIND_ADDRESS:-0.0.0.0}:${WEB_PORT:-3000}:3000"
       - "${API_BIND_ADDRESS:-0.0.0.0}:${FREETOKEN_PORT:-1919}:1919"
-    env_file: [.env]
     environment:
       FREETOKEN_MODE: managed
       WEB_PORT: "3000"
@@ -18,6 +17,17 @@ services:
       MODELS_DIR: /models
       DATA_DIR: /data
       HF_HOME: /hf-cache
+      HF_TOKEN: "${HF_TOKEN:-}"
+      AUTH_ENABLED: "${AUTH_ENABLED:-false}"
+      ADMIN_USERNAME: "${ADMIN_USERNAME:-admin}"
+      ADMIN_PASSWORD: "${ADMIN_PASSWORD:-}"
+      SECURE_COOKIES: "${SECURE_COOKIES:-false}"
+      PUBLIC_API_BASE_URL: "${PUBLIC_API_BASE_URL:-}"
+      FREETOKEN_EXTRA_ARGS: "${FREETOKEN_EXTRA_ARGS:-}"
+      ALLOWED_IMPORT_DIRS: "${ALLOWED_IMPORT_DIRS:-}"
+      METRICS_INTERVAL_SECONDS: "${METRICS_INTERVAL_SECONDS:-2}"
+      ENGINE_READY_TIMEOUT_SECONDS: "${ENGINE_READY_TIMEOUT_SECONDS:-900}"
+      ENGINE_STOP_TIMEOUT_SECONDS: "${ENGINE_STOP_TIMEOUT_SECONDS:-20}"
     volumes:
       - "${MODELS_PATH:-./models}:/models"
       - "${DATA_PATH:-./data}:/data"

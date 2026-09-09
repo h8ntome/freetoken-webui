@@ -66,6 +66,20 @@ Managed Mode packages FreeToken and the web application together. After the firs
 
 **Requirements:** Ubuntu Linux x86-64, NVIDIA Ampere or newer, driver r580+, Docker Engine with Compose v2, and the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html).
 
+#### Compose only — no repository clone
+
+Download the single production Compose file and start it. An `.env` file is optional; the Compose file contains safe first-launch defaults.
+
+```bash
+mkdir freetoken-webui && cd freetoken-webui
+curl -fsSLO https://raw.githubusercontent.com/h8ntome/freetoken-webui/main/docker-compose.yml
+docker compose up -d
+```
+
+This creates persistent `models`, `data`, and `hf-cache` directories beside the Compose file. Open `http://SERVER_IP:3000`, then use **Models → Discover** to download and load a checkpoint.
+
+#### Clone the source
+
 ```bash
 git clone https://github.com/h8ntome/freetoken-webui.git
 cd freetoken-webui
@@ -125,7 +139,7 @@ The production Compose files pull:
 ghcr.io/h8ntome/freetoken-webui:latest
 ```
 
-To pin a release, set `IMAGE_TAG=v1.0.0` in `.env`. Images are published for `linux/amd64`, matching FreeToken's supported server platform.
+No source checkout or local image build is required. To pin a release, set `IMAGE_TAG=v1.0.0` in an optional `.env` file. Images are published for `linux/amd64`, matching FreeToken's supported server platform.
 
 Useful commands:
 
@@ -144,7 +158,10 @@ docker compose up -d
 docker compose down
 ```
 
-The [container publishing workflow](https://github.com/h8ntome/freetoken-webui/actions/workflows/docker-publish.yml) publishes `latest` from `main`, semantic version tags from `v*` Git tags, and immutable commit tags. It uses the repository `GITHUB_TOKEN` with `packages: write`; maintainers should keep Actions workflow permissions enabled and make the GHCR package public for anonymous pulls.
+The [container publishing workflow](https://github.com/h8ntome/freetoken-webui/actions/workflows/docker-publish.yml) publishes `latest` from `main`, semantic version tags from `v*` Git tags, and immutable commit tags. It uses the repository `GITHUB_TOKEN` with `packages: write`.
+
+> [!IMPORTANT]
+> After the first successful publish, a repository owner must open the package's **Package settings → Danger Zone → Change visibility** and make it **Public**. GitHub creates new container packages as private by default; anonymous `docker compose pull` commands will otherwise return `denied` even when the image exists.
 
 ## Configuration
 

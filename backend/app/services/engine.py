@@ -116,9 +116,9 @@ class EngineManager:
     def _build_command(self, model_path: Path, options: dict[str, Any]) -> list[str]:
         argv = [self.config.freetoken_executable, "serve", "--model", str(model_path), "--host", self.config.freetoken_host, "--port", str(self.config.freetoken_port), "--served-model-name", model_path.name]
         allowed = {
-            "gpu": "--gpu", "maxRunningRequests": "--max-running-requests", "maxOutputTokens": "--max-output-tokens",
+            "maxRunningRequests": "--max-running-requests", "maxOutputTokens": "--max-output-tokens",
             "maxSequenceLength": "--max-seq-len-override", "maxPrefillLength": "--max-prefill-length", "memoryRatio": "--memory-ratio",
-            "moeBackend": "--moe-strategy", "kvTokens": "--num-tokens", "moeCacheRate": "--moe-cache-rate",
+            "moeBackend": "--moe-backend", "kvTokens": "--num-tokens", "moeCacheRate": "--moe-cache-rate",
         }
         for key, flag in allowed.items():
             value = options.get(key)
