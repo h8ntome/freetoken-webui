@@ -118,7 +118,7 @@ class EngineManager:
         allowed = {
             "gpu": "--gpu", "maxRunningRequests": "--max-running-requests", "maxOutputTokens": "--max-output-tokens",
             "maxSequenceLength": "--max-seq-len-override", "maxPrefillLength": "--max-prefill-length", "memoryRatio": "--memory-ratio",
-            "moeBackend": "--moe-backend", "kvTokens": "--num-tokens", "moeCacheRate": "--moe-cache-rate",
+            "moeBackend": "--moe-strategy", "kvTokens": "--num-tokens", "moeCacheRate": "--moe-cache-rate",
         }
         for key, flag in allowed.items():
             value = options.get(key)
@@ -139,7 +139,8 @@ class EngineManager:
             proc = self._process
             persisted = self._read_state()
             pid = proc.pid if proc and proc.returncode is None else persisted.get("pid")
-            if not pid or not self._is_owned_process(pid, self._model_path):
+            directly_owned = bool(proc and proc.returncode is None)
+            if not pid or (not directly_owned and not self._is_owned_process(pid, self._model_path)):
                 self._state, self._process = "stopped", None
                 self._write_state({})
                 return self.status()
@@ -151,9 +152,12 @@ class EngineManager:
             except ProcessLookupError:
                 pass
         deadline = time.monotonic() + self.config.engine_stop_timeout_seconds
-        while time.monotonic() < deadline and self._is_owned_process(pid, self._model_path):
+        def still_running() -> bool:
+            return proc.returncode is None if directly_owned and proc else self._is_owned_process(pid, self._model_path)
+
+        while time.monotonic() < deadline and still_running():
             await asyncio.sleep(.25)
-        if self._is_owned_process(pid, self._model_path):
+        if still_running():
             self._append_log("warning", "Graceful stop timed out; terminating the owned process group")
             try:
                 os.killpg(pid, signal.SIGKILL)
@@ -213,6 +217,7 @@ class EngineManager:
             if doc.get("status") == "ok":
                 self._state = "ready" if self.config.freetoken_mode == "managed" and self._state != "external" else "external"
                 self._model_name = doc.get("model") or self._model_name
+                self._error = None
             elif doc.get("status") == "loading":
                 self._state = "loading"
             elif doc.get("status") == "error":
@@ -220,17 +225,29 @@ class EngineManager:
         except Exception:
             if self.config.freetoken_mode == "external":
                 self._health = {}
+                self._error = f"Cannot reach the external FreeToken server at {self.config.engine_url}"
         return self.status()
 
     def status(self) -> dict[str, Any]:
         progress = self._health.get("progress") or {}
         total = progress.get("total_bytes") or 0
+        reachable = self._health.get("status") == "ok"
+        managed = self.config.freetoken_mode == "managed"
+        owned = managed and self._state != "external"
         return {
-            "state": self._state, "mode": self.config.freetoken_mode, "owned": self._state != "external" and self.config.freetoken_mode == "managed",
+            "state": self._state, "mode": self.config.freetoken_mode, "owned": owned,
             "model": self._model_name, "modelPath": self._model_path, "pid": self._process.pid if self._process else self._read_state().get("pid"),
             "startedAt": self._started_at, "exitCode": self._exit_code, "error": self._error,
             "phase": self._health.get("phase"), "progress": {"doneBytes": progress.get("done_bytes", 0), "totalBytes": total, "percent": round(progress.get("done_bytes", 0) / total * 100, 1) if total else None},
             "health": self._health,
+            "capabilities": {
+                "chat": reachable,
+                "monitoring": reachable,
+                "localModels": managed,
+                "downloads": managed,
+                "lifecycle": owned,
+                "deleteModels": managed,
+            },
         }
 
     def _append_log(self, level: str, message: str) -> None:

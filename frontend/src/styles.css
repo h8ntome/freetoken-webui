@@ -8,3 +8,10 @@ html,body,#root{max-width:100%;overflow-x:hidden}body{min-width:0}
 @media(max-width:460px){.metric-grid,.chat-settings{grid-template-columns:1fr}.hero-actions{flex-wrap:wrap}.page-heading{flex-direction:column}.catalog-card{min-height:165px}.request-numbers b{font-size:18px}.endpoint-hero{align-items:flex-start;flex-wrap:wrap}.endpoint-hero code{font-size:11px;word-break:break-all}.log-toolbar .follow{display:none}}
 @media(prefers-reduced-motion:reduce){*,*:before,*:after{animation-duration:.01ms!important;animation-iteration-count:1!important;scroll-behavior:auto!important;transition:none!important}}
 body{min-width:0}
+
+.mode-boundary{min-height:340px;border:1px solid var(--line);border-radius:18px;background:linear-gradient(145deg,var(--panel),var(--panel2));display:flex;align-items:flex-start;gap:22px;padding:44px;box-shadow:var(--shadow)}
+.mode-boundary>span{width:54px;height:54px;border-radius:16px;display:grid;place-items:center;color:var(--yellow);background:color-mix(in srgb,var(--yellow) 13%,transparent);border:1px solid color-mix(in srgb,var(--yellow) 28%,transparent)}
+.mode-boundary>span svg{width:24px}.mode-boundary small{color:var(--accent);letter-spacing:.14em;font:500 11px "DM Mono",monospace}.mode-boundary h2{font-size:28px;margin:10px 0 12px}.mode-boundary p{max-width:680px;line-height:1.75;color:var(--muted);margin:0 0 22px}.mode-boundary a{color:var(--accent2);font-weight:700}
+.external-runtime .external-note{grid-column:1/-1;border-top:1px solid var(--line);padding-top:14px;color:var(--muted);font-size:13px}
+.icon-button:disabled{opacity:.32;cursor:not-allowed;transform:none}
+@media(max-width:620px){.mode-boundary{padding:26px;min-height:280px;flex-direction:column}.mode-boundary h2{font-size:23px}}

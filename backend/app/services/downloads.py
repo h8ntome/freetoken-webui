@@ -13,7 +13,7 @@ from huggingface_hub import HfApi, hf_hub_url
 
 from ..config import Settings
 from ..database import Database
-from .library import safe_model_path
+from .library import _complete, safe_model_path
 
 
 class DownloadCancelled(Exception):
@@ -25,15 +25,22 @@ class DownloadManager:
         self.config = config
         self.db = database
         self._cancel: dict[str, threading.Event] = {}
+        self._active_repositories: dict[str, str] = {}
         self._lock = threading.Lock()
 
     def start(self, repo_id: str, revision: str = "main") -> dict[str, Any]:
         if not repo_id or repo_id.count("/") != 1 or any(x in repo_id for x in ("..", "\\", "\x00")):
             raise ValueError("Expected a Hugging Face repository like publisher/model")
-        job = self.db.create_job("download", {"repoId": repo_id, "revision": revision})
-        cancel = threading.Event()
+        destination = safe_model_path(self.config, repo_id.replace("/", "--"), must_exist=False)
+        if destination.is_dir() and _complete(destination)[0]:
+            raise ValueError("This model is already downloaded. Rescan the library if it is not visible.")
         with self._lock:
+            if repo_id in self._active_repositories.values():
+                raise ValueError("A download for this model is already in progress")
+            job = self.db.create_job("download", {"repoId": repo_id, "revision": revision})
+            cancel = threading.Event()
             self._cancel[job["id"]] = cancel
+            self._active_repositories[job["id"]] = repo_id
         threading.Thread(target=self._run, args=(job["id"], repo_id, revision, cancel), daemon=True, name=f"download-{job['id'][:8]}").start()
         return job
 
@@ -53,17 +60,10 @@ class DownloadManager:
             info = api.model_info(repo_id, revision=revision, files_metadata=True)
             files = [s for s in info.siblings if not s.rfilename.startswith((".git", ".cache/"))]
             safetensors = [s for s in files if s.rfilename.endswith(".safetensors")]
-            gguf = [s for s in files if s.rfilename.lower().endswith(".gguf")]
-            if not safetensors and not gguf:
-                raise RuntimeError("Repository has no safetensors or GGUF weights that FreeToken can load")
-            if not safetensors and len(gguf) > 1:
-                raise RuntimeError("Repository contains multiple GGUF variants; download a specific compatible checkpoint instead")
-            if safetensors:
-                excluded = (".bin", ".h5", ".msgpack", ".onnx", ".ot", ".gguf")
-                files = [s for s in files if not s.rfilename.lower().endswith(excluded)]
-            else:
-                selected = gguf[0].rfilename
-                files = [s for s in files if not s.rfilename.lower().endswith(".gguf") or s.rfilename == selected]
+            if not safetensors:
+                raise RuntimeError("Repository has no safetensors weights that the current FreeToken release can load")
+            excluded = (".bin", ".h5", ".msgpack", ".onnx", ".ot", ".gguf")
+            files = [s for s in files if not s.rfilename.lower().endswith(excluded)]
             total = sum(int(getattr(s, "size", 0) or 0) for s in files)
             free = shutil.disk_usage(self.config.models_dir).free
             if total and free < total + min(5 * 1024**3, int(total * 0.05)):
@@ -89,6 +89,7 @@ class DownloadManager:
         finally:
             with self._lock:
                 self._cancel.pop(job_id, None)
+                self._active_repositories.pop(job_id, None)
 
     def _download_file(self, job_id: str, repo_id: str, revision: str, destination: Path, filename: str, expected: int, total: int, state: dict[str, Any], cancel: threading.Event) -> None:
         final = (destination / filename).resolve(strict=False)

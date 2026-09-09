@@ -77,6 +77,15 @@ downloads = DownloadManager(settings, database)
 metrics = MetricsService(settings, engine)
 
 
+def require_managed_mode() -> None:
+    """Reject local filesystem/process mutations when acting as an external client."""
+    if settings.freetoken_mode != "managed":
+        raise HTTPException(
+            status_code=409,
+            detail="This action is available only in Full Managed Mode. External Mode does not control the remote model filesystem or process.",
+        )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await engine.initialize()
@@ -129,8 +138,9 @@ async def bootstrap(request: Request, _: Principal = Depends(current_principal))
     return {
         "engine": status, "modelCount": len(found), "gpuDetected": bool(gpu), "gpus": gpu,
         "modelsDir": str(settings.models_dir), "modelsDirWritable": settings.models_dir.is_dir() and os.access(settings.models_dir, os.W_OK),
-        "freeTokenReachable": status["state"] in {"ready", "loading", "external"}, "mode": settings.freetoken_mode,
+        "freeTokenReachable": status.get("health", {}).get("status") in {"ok", "loading"}, "mode": settings.freetoken_mode,
         "publicApi": _public_api(request), "authEnabled": settings.auth_enabled,
+        "capabilities": status["capabilities"],
     }
 
 
@@ -171,11 +181,13 @@ async def search_models(query: str, _: Principal = Depends(current_principal)):
 
 @app.post("/api/models/download", status_code=202)
 async def download_model(body: DownloadBody, _: Principal = Depends(require_csrf)):
+    require_managed_mode()
     return downloads.start(body.repoId, body.revision)
 
 
 @app.post("/api/jobs/{job_id}/cancel")
 async def cancel_job(job_id: str, _: Principal = Depends(require_csrf)):
+    require_managed_mode()
     downloads.cancel(job_id)
     return {"ok": True}
 
@@ -190,17 +202,17 @@ async def get_job(job_id: str, _: Principal = Depends(current_principal)):
 
 @app.post("/api/models/import")
 async def import_model(body: ImportBody, _: Principal = Depends(require_csrf)):
+    require_managed_mode()
     return library.register(body.path)
 
 
 @app.delete("/api/models/{model_id:path}")
-async def delete_model(model_id: str, unload: bool = False, _: Principal = Depends(require_csrf)):
+async def delete_model(model_id: str, _: Principal = Depends(require_csrf)):
+    require_managed_mode()
     path = safe_model_path(settings, model_id)
     active = engine.status().get("modelPath")
     if active and Path(active).resolve(strict=False) == path.resolve(strict=False):
-        if not unload:
-            raise HTTPException(status_code=409, detail="Model is currently loaded. Confirm unload-and-delete to continue.")
-        await engine.stop()
+        raise HTTPException(status_code=409, detail="Model is currently loaded. Unload it before deleting it.")
     return {"deleted": True, "recoveredBytes": library.delete(model_id)}
 
 
@@ -211,17 +223,20 @@ async def engine_status(_: Principal = Depends(current_principal)):
 
 @app.post("/api/models/{model_id:path}/load")
 async def load_model(model_id: str, body: LoadBody, _: Principal = Depends(require_csrf)):
+    require_managed_mode()
     path = safe_model_path(settings, model_id)
     return await (engine.switch(path, body.options) if body.switch else engine.start(path, body.options))
 
 
 @app.post("/api/engine/unload")
 async def unload(_: Principal = Depends(require_csrf)):
+    require_managed_mode()
     return await engine.stop()
 
 
 @app.post("/api/engine/restart")
 async def restart(_: Principal = Depends(require_csrf)):
+    require_managed_mode()
     status = engine.status()
     if not status.get("modelPath"):
         raise HTTPException(status_code=409, detail="No managed model is selected")
@@ -355,12 +370,21 @@ async def chat_completion(body: ChatRequest, _: Principal = Depends(require_csrf
 @app.get("/api/api-info")
 async def api_info(request: Request, _: Principal = Depends(current_principal)):
     base = _public_api(request)
-    return {"baseUrl": base, "configured": bool(settings.public_api_base_url), "model": engine.status().get("model"), "openai": {"baseUrl": f"{base}/v1", "chatCompletions": f"{base}/v1/chat/completions", "responses": f"{base}/v1/responses"}, "anthropic": {"baseUrl": base, "messages": f"{base}/v1/messages"}, "warning": None if settings.public_api_base_url else "Browser-derived address is a candidate only; verify reachability from each client."}
+    if settings.public_api_base_url:
+        warning = None
+    elif settings.freetoken_mode == "external":
+        warning = "This is the server-side external endpoint. Set PUBLIC_API_BASE_URL if clients use a different reachable address."
+    else:
+        warning = "Browser-derived address is a candidate only; verify reachability from each client."
+    source = "configured" if settings.public_api_base_url else ("external" if settings.freetoken_mode == "external" else "browser")
+    return {"baseUrl": base, "configured": bool(settings.public_api_base_url), "source": source, "model": engine.status().get("model"), "openai": {"baseUrl": f"{base}/v1", "chatCompletions": f"{base}/v1/chat/completions", "responses": f"{base}/v1/responses"}, "anthropic": {"baseUrl": base, "messages": f"{base}/v1/messages"}, "warning": warning}
 
 
 def _public_api(request: Request) -> str:
     if settings.public_api_base_url:
         return settings.public_api_base_url.rstrip("/")
+    if settings.freetoken_mode == "external":
+        return settings.freetoken_external_url.rstrip("/")
     hostname = request.url.hostname or "SERVER"
     if ":" in hostname and not hostname.startswith("["):
         hostname = f"[{hostname}]"

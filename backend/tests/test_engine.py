@@ -20,7 +20,7 @@ def test_command_is_argv_and_only_allows_known_options(tmp_path: Path):
     argv = mgr._build_command(model, {"memoryRatio": .8, "moeBackend": "hybrid", "evil": "$(id)"})
     assert argv[:4] == ["ft", "serve", "--model", str(model)]
     assert "--memory-ratio" in argv and "0.8" in argv
-    assert "--moe-backend" in argv and "hybrid" in argv
+    assert "--moe-strategy" in argv and "hybrid" in argv
     assert "$(id)" not in argv
     assert model.name in argv
 
@@ -39,6 +39,17 @@ def test_log_ring_is_bounded(tmp_path: Path):
         mgr._append_log("info", str(i))
     assert len(mgr.logs(limit=2000)) == 2000
     assert mgr.logs(limit=1)[0]["message"] == "5099"
+
+
+def test_external_mode_advertises_no_local_management(tmp_path: Path):
+    models, data = tmp_path / "models", tmp_path / "data"
+    models.mkdir(); data.mkdir()
+    mgr = EngineManager(Settings(models_dir=models, data_dir=data, auth_enabled=False, freetoken_mode="external"))
+    status = mgr.status()
+    assert status["owned"] is False
+    assert status["capabilities"]["lifecycle"] is False
+    assert status["capabilities"]["downloads"] is False
+    assert status["capabilities"]["deleteModels"] is False
 
 
 @pytest.mark.asyncio

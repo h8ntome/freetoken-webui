@@ -1,7 +1,9 @@
 services:
   freetoken-web:
-    image: ghcr.io/h8ntome/freetoken-webui:${IMAGE_TAG:-latest}
-    pull_policy: always
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    image: freetoken-webui:dev
     restart: unless-stopped
     init: true
     gpus: all

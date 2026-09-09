@@ -59,3 +59,22 @@ def test_index_with_missing_shard_is_incomplete(tmp_path: Path):
     model = ModelLibrary(cfg).scan()[0]
     assert model["status"] == "failed"
     assert "Missing 1" in model["issue"]
+
+
+def test_native_ftw_checkpoint_is_discovered(tmp_path: Path):
+    cfg = config(tmp_path)
+    path = cfg.models_dir / "converted"
+    path.mkdir()
+    (path / "config.json").write_text('{"model_type":"qwen3"}')
+    (path / "freetoken-00000.ftw").write_bytes(b"weights")
+    assert ModelLibrary(cfg).scan()[0]["status"] == "downloaded"
+
+
+def test_gguf_only_directory_is_not_claimed_as_supported(tmp_path: Path):
+    cfg = config(tmp_path)
+    path = cfg.models_dir / "old-gguf"
+    path.mkdir()
+    (path / "model.gguf").write_bytes(b"weights")
+    model = ModelLibrary(cfg).scan()[0]
+    assert model["status"] == "failed"
+    assert model["issue"] == "Missing config.json"

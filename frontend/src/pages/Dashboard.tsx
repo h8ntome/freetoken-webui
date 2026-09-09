@@ -33,6 +33,7 @@ export default function Dashboard({
   const ready =
       (engine.state === "ready" || engine.state === "external") &&
       engine.health?.status === "ok",
+    external = engine.mode === "external",
     gpu = metrics?.system.gpus[0],
     runtime = metrics?.runtime || {},
     tps = runtime.throughput?.decode_tps || 0;
@@ -59,7 +60,19 @@ export default function Dashboard({
           {engine.state}
         </Badge>
       </div>
-      {models.length === 0 ? (
+      {external ? (
+        <section className="hero-runtime external-runtime">
+          <div className="hero-main">
+            <div className="status-rings"><span /><span /><Bot /></div>
+            <div><small>EXTERNAL RUNTIME</small><h2>{engine.model || "Waiting for FreeToken"}</h2>
+              <div className="runtime-meta"><span><i className={ready ? "green" : "amber"} />{ready ? "Connected and accepting requests" : "Connection unavailable"}</span><span>External mode</span></div>
+            </div>
+          </div>
+          <div className="hero-actions"><button className="secondary" onClick={() => navigate("chat")} disabled={!ready}><MessageSquare size={16} />Open chat</button></div>
+          {engine.error && <div className="inline-error">{engine.error}</div>}
+          <div className="external-note">Lifecycle and model storage are controlled by the external FreeToken host.</div>
+        </section>
+      ) : models.length === 0 ? (
         <Empty icon={<Box />} title="Your library is waiting">
           No complete models were found in the configured storage directory.
           <button className="primary" onClick={() => navigate("models")}>

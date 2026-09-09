@@ -4,24 +4,18 @@ services:
     pull_policy: always
     restart: unless-stopped
     init: true
-    gpus: all
-    ipc: host
     ports:
       - "${WEB_BIND_ADDRESS:-0.0.0.0}:${WEB_PORT:-3000}:3000"
-      - "${API_BIND_ADDRESS:-0.0.0.0}:${FREETOKEN_PORT:-1919}:1919"
     env_file: [.env]
     environment:
-      FREETOKEN_MODE: managed
+      FREETOKEN_MODE: external
       WEB_PORT: "3000"
-      FREETOKEN_HOST: "0.0.0.0"
-      FREETOKEN_PORT: "1919"
-      MODELS_DIR: /models
       DATA_DIR: /data
-      HF_HOME: /hf-cache
+      MODELS_DIR: /models
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
-      - "${MODELS_PATH:-./models}:/models"
       - "${DATA_PATH:-./data}:/data"
-      - "${HF_CACHE_PATH:-./hf-cache}:/hf-cache"
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:3000/healthz"]
       interval: 20s

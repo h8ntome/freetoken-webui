@@ -85,16 +85,16 @@ def _read_json(path: Path) -> dict[str, Any]:
 
 
 def _complete(path: Path) -> tuple[bool, str | None]:
-    config = _read_json(path / "config.json")
-    if not config and not list(path.glob("*.gguf")):
-        return False, "Missing config.json or GGUF file"
+    config = _read_json(path / "config.json") or _read_json(path / "inference" / "config.json")
+    if not config:
+        return False, "Missing config.json"
     indexes = list(path.glob("*.safetensors.index.json"))
     if indexes:
         index = _read_json(indexes[0])
         missing = [name for name in set((index.get("weight_map") or {}).values()) if not (path / name).is_file()]
         if missing:
             return False, f"Missing {len(missing)} weight shard(s)"
-    elif not list(path.glob("*.safetensors")) and not list(path.glob("*.gguf")):
+    elif not list(path.glob("*.safetensors")) and not list(path.glob("*.ftw")):
         return False, "No model weight files found"
     return True, None
 
@@ -119,7 +119,7 @@ class ModelLibrary:
             if path.name.startswith(".") or not path.is_dir():
                 continue
             complete, issue = _complete(path)
-            config = _read_json(path / "config.json")
+            config = _read_json(path / "config.json") or _read_json(path / "inference" / "config.json")
             text = config.get("text_config") if isinstance(config.get("text_config"), dict) else config
             archs = text.get("architectures") or config.get("architectures") or []
             architecture = str(archs[0] if archs else text.get("model_type") or "Unknown")

@@ -6,6 +6,9 @@ COPY frontend/ ./
 RUN npm run build
 
 FROM nvidia/cuda:13.0.2-devel-ubuntu24.04 AS runtime
+LABEL org.opencontainers.image.source="https://github.com/h8ntome/freetoken-webui" \
+      org.opencontainers.image.description="Web control plane for FreeToken local inference" \
+      org.opencontainers.image.licenses="Apache-2.0"
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
@@ -19,7 +22,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends python3 python3
 WORKDIR /app
 COPY backend/requirements.txt /app/backend/requirements.txt
 RUN python3 -m pip install --break-system-packages -r /app/backend/requirements.txt \
-    "freetoken[accel] @ git+https://github.com/FlashML-org/FreeToken.git@af71ba43206e124f5ff6419b47ee36c6e9981078"
+    "freetoken[accel] @ git+https://github.com/FlashML-org/FreeToken.git@3d919e9bd94fc5454bdb50e09659648443e30f5e"
 COPY backend/ /app/backend/
 COPY --from=web-build /src/frontend/dist /app/frontend/dist
 EXPOSE 3000 1919
