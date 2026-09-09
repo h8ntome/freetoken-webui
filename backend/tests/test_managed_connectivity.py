@@ -52,3 +52,27 @@ def test_hugging_face_errors_are_actionable():
     assert "gated or private" in _hugging_face_error(denied)
     assert "rate limit" in _hugging_face_error(limited)
     assert "did not respond" in _hugging_face_error(httpx.ReadTimeout("timeout"))
+
+
+def test_healthz_healthy_when_idle_in_managed_mode():
+    from starlette.testclient import TestClient
+    from app.main import app, engine
+    engine._state = "stopped"
+    engine._health = {}
+    client = TestClient(app)
+    response = client.get("/healthz")
+    assert response.status_code == 200
+    assert response.json()["status"] == "ok"
+
+
+def test_healthz_degraded_when_engine_failed():
+    from starlette.testclient import TestClient
+    from app.main import app, engine
+    engine._state = "failed"
+    client = TestClient(app)
+    response = client.get("/healthz")
+    assert response.status_code == 503
+    assert response.json()["status"] == "degraded"
+    # Reset state
+    engine._state = "stopped"
+

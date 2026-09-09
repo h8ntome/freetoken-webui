@@ -165,10 +165,7 @@ docker compose up -d
 docker compose down
 ```
 
-The [container publishing workflow](https://github.com/h8ntome/freetoken-webui/actions/workflows/docker-publish.yml) publishes `latest` from `main`, semantic version tags from `v*` Git tags, and immutable commit tags. It uses the repository `GITHUB_TOKEN` with `packages: write`.
-
-> [!IMPORTANT]
-> After the first successful publish, a repository owner must open the package's **Package settings → Danger Zone → Change visibility** and make it **Public**. GitHub creates new container packages as private by default; anonymous `docker compose pull` commands will otherwise return `denied` even when the image exists.
+The [container publishing workflow](https://github.com/h8ntome/freetoken-webui/actions/workflows/docker-publish.yml) publishes `latest` from `main`, semantic version tags from `v*` Git tags, and immutable commit tags.
 
 ## Configuration
 

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Activity, Boxes, Braces, ChevronLeft, Cpu, Gauge, Library, Menu, MessageSquare, Moon, ScrollText, Settings as SettingsIcon, Sun } from 'lucide-react'
+import { Activity, Boxes, Braces, ChevronLeft, Cpu, Gauge, Menu, MessageSquare, Moon, ScrollText, Settings as SettingsIcon, Sun } from 'lucide-react'
 import { api, post, setCsrf } from './lib/api'
 import type { EngineStatus, Metrics, Model } from './types'
 import Dashboard from './pages/Dashboard'

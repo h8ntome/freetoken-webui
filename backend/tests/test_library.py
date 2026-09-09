@@ -78,3 +78,63 @@ def test_gguf_only_directory_is_not_claimed_as_supported(tmp_path: Path):
     model = ModelLibrary(cfg).scan()[0]
     assert model["status"] == "failed"
     assert model["issue"] == "Missing config.json"
+
+
+def test_classify_search_result():
+    from app.services.library import classify_search_result
+
+    # 1. Verified repository
+    res = classify_search_result(
+        "deepseek-ai/DeepSeek-V4-Flash-0731",
+        pipeline_tag="text-generation",
+        tags=["safetensors", "deepseek"],
+        siblings=None,
+    )
+    assert res["compatibility"] == "verified"
+    assert res["hasSafetensors"] is True
+
+    # 2. Unsupported pipeline tag (e.g. image-classification)
+    res = classify_search_result(
+        "some-org/vit-base",
+        pipeline_tag="image-classification",
+        tags=["vision"],
+        siblings=None,
+    )
+    assert res["compatibility"] == "unsupported"
+    assert "not a text-generation" in res["unsupportedReason"]
+
+    # 3. GGUF-only repository without safetensors
+    class Sibling:
+        def __init__(self, name):
+            self.rfilename = name
+
+    res = classify_search_result(
+        "TheBloke/Some-Model-GGUF",
+        pipeline_tag="text-generation",
+        tags=["gguf"],
+        siblings=[Sibling("model.Q4_K_M.gguf"), Sibling("README.md")],
+    )
+    assert res["compatibility"] == "unsupported"
+    assert "safetensors" in res["unsupportedReason"].lower() or "gguf" in res["unsupportedReason"].lower()
+
+    # 4. Likely compatible text model with safetensors and supported arch
+    res = classify_search_result(
+        "some-user/Qwen2.5-7B-Custom",
+        pipeline_tag="text-generation",
+        tags=["safetensors", "qwen"],
+        siblings=[Sibling("model.safetensors"), Sibling("config.json")],
+    )
+    assert res["compatibility"] == "likely"
+    assert res["architecture"] == "qwen"
+    assert res["hasSafetensors"] is True
+
+    # 5. Unknown text model with safetensors but unsupported/unmatched arch
+    res = classify_search_result(
+        "some-user/custom-transformer",
+        pipeline_tag="text-generation",
+        tags=["safetensors", "custom-arch"],
+        siblings=[Sibling("model.safetensors"), Sibling("config.json")],
+    )
+    assert res["compatibility"] == "unknown"
+    assert res["hasSafetensors"] is True
+

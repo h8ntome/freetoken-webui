@@ -10,6 +10,18 @@ from typing import Any
 from ..config import Settings
 
 
+# Architecture substrings (lowercased) that FreeToken is known to support.
+# Matched against HF model_type, architecture names, and tag strings.
+SUPPORTED_ARCHITECTURES = (
+    "deepseek", "qwen", "gptoss", "gpt_oss", "gpt-oss",
+    "gemma4", "gemma-4", "gemma_4",
+    "glm", "minimax", "muse",
+)
+
+# HF pipeline tags that represent text-generation models FreeToken can serve.
+SUPPORTED_PIPELINE_TAGS = {"text-generation", "text2text-generation"}
+
+# Repositories confirmed to work with a specific FreeToken release.
 KNOWN_GOOD = [
     {"repo": "deepseek-ai/DeepSeek-V4-Flash-0731", "family": "DeepSeek-V4", "notes": "Requires the inference/config.json subdirectory."},
     {"repo": "RedHatAI/GLM-5.3-Flash-NVFP4", "family": "GLM-5.3-Flash"},
@@ -39,6 +51,8 @@ KNOWN_GOOD = [
     {"repo": "meta-models/Muse-Glimmer-30B", "family": "Muse-Glimmer"},
     {"repo": "RedHatAI/Muse-Glimmer-30B-NVFP4", "family": "Muse-Glimmer"},
 ]
+
+_VERIFIED_REPOS = {item["repo"].lower() for item in KNOWN_GOOD}
 
 
 def _safe_resolve(path: Path, roots: tuple[Path, ...]) -> Path:
@@ -100,11 +114,65 @@ def _complete(path: Path) -> tuple[bool, str | None]:
 
 
 def _compatibility(repo: str | None, architecture: str) -> str:
-    if repo and any(x["repo"].lower() == repo.lower() for x in KNOWN_GOOD):
+    if repo and repo.lower() in _VERIFIED_REPOS:
         return "verified"
     marker = architecture.lower()
-    supported = ("deepseek", "qwen", "gptoss", "gpt_oss", "gemma4", "glm", "minimax", "muse")
-    return "likely" if any(item in marker for item in supported) else "unknown"
+    return "likely" if any(item in marker for item in SUPPORTED_ARCHITECTURES) else "unknown"
+
+
+def _architecture_compatible(marker: str) -> bool:
+    """Return True when the lowercased architecture/tag string matches a supported family."""
+    return any(item in marker for item in SUPPORTED_ARCHITECTURES)
+
+
+def classify_search_result(
+    repo_id: str,
+    pipeline_tag: str | None,
+    tags: list[str],
+    siblings: list[Any] | None,
+) -> dict[str, Any]:
+    """Classify an HF search result for FreeToken compatibility.
+
+    Returns a dict with ``compatibility``, ``hasSafetensors``, ``architecture``,
+    and ``unsupportedReason`` (only when unsupported).
+    """
+    # Verified repos bypass all heuristics.
+    if repo_id.lower() in _VERIFIED_REPOS:
+        return {"compatibility": "verified", "hasSafetensors": True, "architecture": None, "unsupportedReason": None}
+
+    # Pipeline check — must be a text-generation model.
+    if pipeline_tag and pipeline_tag not in SUPPORTED_PIPELINE_TAGS:
+        return {"compatibility": "unsupported", "hasSafetensors": False, "architecture": pipeline_tag, "unsupportedReason": f"Pipeline type \"{pipeline_tag}\" is not a text-generation model."}
+
+    # Safetensors check — FreeToken requires safetensors weights.
+    has_safetensors = False
+    if siblings:
+        has_safetensors = any(
+            getattr(s, "rfilename", s if isinstance(s, str) else "").endswith(".safetensors")
+            for s in siblings
+        )
+    elif tags:
+        has_safetensors = "safetensors" in tags
+
+    if not has_safetensors:
+        return {"compatibility": "unsupported", "hasSafetensors": False, "architecture": None, "unsupportedReason": "No safetensors weights found. FreeToken requires the safetensors format."}
+
+    # Architecture check from tags.
+    detected_arch: str | None = None
+    tag_blob = " ".join(tags).lower() + " " + repo_id.lower()
+    if _architecture_compatible(tag_blob):
+        detected_arch = next((arch for arch in SUPPORTED_ARCHITECTURES if arch in tag_blob), None)
+        return {"compatibility": "likely", "hasSafetensors": True, "architecture": detected_arch, "unsupportedReason": None}
+
+    # GGUF-only repos.
+    if siblings and all(
+        getattr(s, "rfilename", s if isinstance(s, str) else "").endswith((".gguf", ".md", ".txt", ".json", ".yml", ".yaml", ".gitattributes"))
+        or getattr(s, "rfilename", s if isinstance(s, str) else "").startswith(".")
+        for s in siblings
+    ):
+        return {"compatibility": "unsupported", "hasSafetensors": False, "architecture": None, "unsupportedReason": "This repository appears to contain only GGUF weights, which FreeToken does not support."}
+
+    return {"compatibility": "unknown", "hasSafetensors": has_safetensors, "architecture": detected_arch, "unsupportedReason": None}
 
 
 class ModelLibrary:

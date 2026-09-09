@@ -211,6 +211,16 @@ class EngineManager:
                 self._error = None
             elif doc.get("status") == "error":
                 self._state, self._error = "failed", doc.get("message") or "FreeToken reported a fatal error"
+        except httpx.ConnectError:
+            self._health = {}
+            if self.config.freetoken_mode == "external":
+                self._error = f"Cannot reach the external FreeToken server at {self.config.engine_url}. Verify the address and that FreeToken is running."
+            elif self._state not in {"starting", "loading"}:
+                self._error = f"Cannot connect to the managed FreeToken service at {self.config.engine_url}. The service may be starting or restarting."
+        except httpx.TimeoutException:
+            self._health = {}
+            if self._state not in {"starting", "loading"}:
+                self._error = f"FreeToken at {self.config.engine_url} did not respond in time. It may still be initializing."
         except Exception as exc:
             self._health = {}
             if self.config.freetoken_mode == "external":
@@ -257,13 +267,23 @@ class EngineManager:
 
     async def chat_stream(self, payload: dict[str, Any]) -> AsyncIterator[bytes]:
         timeout = httpx.Timeout(connect=10, read=None, write=30, pool=30)
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            async with client.stream("POST", f"{self.config.engine_url}/v1/chat/completions", json={**payload, "stream": True}) as response:
-                if response.status_code >= 400:
-                    body = await response.aread()
-                    raise RuntimeError(body.decode(errors="replace")[:2000])
-                async for chunk in response.aiter_raw():
-                    yield chunk
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                async with client.stream("POST", f"{self.config.engine_url}/v1/chat/completions", json={**payload, "stream": True}) as response:
+                    if response.status_code >= 400:
+                        body = await response.aread()
+                        text = body.decode(errors="replace")[:2000]
+                        if response.status_code == 404:
+                            raise RuntimeError("FreeToken does not have a model loaded. Load a model from the Models page before starting a chat.")
+                        if "out of memory" in text.lower() or "oom" in text.lower():
+                            raise RuntimeError("FreeToken ran out of GPU memory while processing the request. Try a smaller model or reduce the context length.")
+                        raise RuntimeError(text or f"FreeToken returned HTTP {response.status_code}")
+                    async for chunk in response.aiter_raw():
+                        yield chunk
+        except httpx.ConnectError:
+            raise RuntimeError("Cannot connect to FreeToken. The inference engine may not be running. Check the engine status on the Dashboard.")
+        except httpx.TimeoutException:
+            raise RuntimeError("The request to FreeToken timed out. The engine may be overloaded or still initializing.")
 
     async def _request_json(
         self,

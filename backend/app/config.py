@@ -23,12 +23,12 @@ class Settings(BaseSettings):
     freetoken_external_url: str = "http://127.0.0.1:1919"
     freetoken_executable: str = "ft"
     freetoken_extra_args: str = ""
-    models_dir: Path = Path("/models")
+    models_dir: Path = Path("./models")
     allowed_import_dirs: str = ""
-    data_dir: Path = Path("/data")
+    data_dir: Path = Path("./data")
     hf_token: str | None = None
     public_api_base_url: str | None = None
-    auth_enabled: bool = True
+    auth_enabled: bool = False
     admin_username: str = "admin"
     admin_password: str = ""
     secure_cookies: bool = False

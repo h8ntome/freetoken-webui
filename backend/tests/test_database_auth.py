@@ -21,7 +21,7 @@ def test_interrupted_jobs_are_reconciled(tmp_path: Path):
 def test_auth_hashes_password_and_sessions(tmp_path: Path):
     db = Database(tmp_path / "state.sqlite")
     db.initialize()
-    service = AuthService(Settings(models_dir=tmp_path/"m", data_dir=tmp_path/"d", admin_password="correct horse"), db)
+    service = AuthService(Settings(models_dir=tmp_path/"m", data_dir=tmp_path/"d", auth_enabled=True, admin_password="correct horse"), db)
     assert "correct horse" not in service.password_hash
     response = Response()
     principal = service.login("admin", "correct horse", response)

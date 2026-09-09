@@ -13,7 +13,7 @@ from huggingface_hub import HfApi, hf_hub_url
 
 from ..config import Settings
 from ..database import Database
-from .library import _complete, safe_model_path
+from .library import _complete, classify_search_result, safe_model_path
 
 
 class DownloadCancelled(Exception):
@@ -58,6 +58,15 @@ class DownloadManager:
             self.db.update_job(job_id, state="running", progress={"phase": "reading-metadata", "percent": 0})
             api = HfApi(token=self.config.hf_token)
             info = api.model_info(repo_id, revision=revision, files_metadata=True)
+
+            # Pre-download compatibility check.
+            tags = [t for t in (info.tags or [])]
+            siblings_list = list(info.siblings) if info.siblings else []
+            compat = classify_search_result(repo_id, info.pipeline_tag, tags, siblings_list)
+            if compat["compatibility"] == "unsupported":
+                reason = compat["unsupportedReason"] or "This model does not appear to use a format currently supported by FreeToken."
+                raise RuntimeError(reason)
+
             files = [s for s in info.siblings if not s.rfilename.startswith((".git", ".cache/"))]
             safetensors = [s for s in files if s.rfilename.endswith(".safetensors")]
             if not safetensors:
