@@ -1,11 +1,10 @@
 services:
-  freetoken-web:
-    image: ghcr.io/h8ntome/freetoken-webui:${IMAGE_TAG:-latest}
+  freetoken-webui:
+    container_name: freetoken-webui
+    image: "ghcr.io/h8ntome/freetoken-webui:${IMAGE_TAG:-latest}"
     pull_policy: always
     restart: unless-stopped
     init: true
-    ports:
-      - "${WEB_BIND_ADDRESS:-0.0.0.0}:${WEB_PORT:-3000}:3000"
     environment:
       FREETOKEN_MODE: external
       FREETOKEN_EXTERNAL_URL: "${FREETOKEN_EXTERNAL_URL:-http://host.docker.internal:1919}"
@@ -18,6 +17,9 @@ services:
       SECURE_COOKIES: "${SECURE_COOKIES:-false}"
       PUBLIC_API_BASE_URL: "${PUBLIC_API_BASE_URL:-}"
       METRICS_INTERVAL_SECONDS: "${METRICS_INTERVAL_SECONDS:-2}"
+      ENGINE_PROXY_RETRIES: "${ENGINE_PROXY_RETRIES:-3}"
+    ports:
+      - "${WEB_BIND_ADDRESS:-0.0.0.0}:${WEB_PORT:-3000}:3000"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
@@ -26,5 +28,5 @@ services:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:3000/healthz"]
       interval: 20s
       timeout: 5s
-      retries: 3
+      retries: 5
       start_period: 20s

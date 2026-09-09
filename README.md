@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="frontend/public/freetoken-webui-logo.png" width="640" alt="FreeToken Web logo">
+  <img src="frontend/public/freetoken-webui-logo.png" width="640" alt="FreeToken WebUI logo">
 </p>
 
-<h1 align="center">FreeToken Web</h1>
+<h1 align="center">FreeToken WebUI</h1>
 
 <p align="center">
   A focused, self-hosted control plane for running <a href="https://github.com/FlashML-org/FreeToken">FreeToken</a> without living in the terminal.
@@ -27,12 +27,12 @@
 </p>
 
 <p align="center">
-  <img src="docs/images/dashboard.png" width="920" alt="FreeToken Web dashboard">
+  <img src="docs/images/dashboard.png" width="920" alt="FreeToken WebUI dashboard">
 </p>
 
-## Why FreeToken Web?
+## Why FreeToken WebUI?
 
-[FreeToken](https://github.com/FlashML-org/FreeToken) is the inference engine. FreeToken Web adds the operational layer around it: checkpoint discovery, safe model downloads, exact-process lifecycle management, streaming chat, persistent conversations, runtime telemetry, logs, and copy-ready native API examples.
+[FreeToken](https://github.com/FlashML-org/FreeToken) is the inference engine. FreeToken WebUI adds the operational layer around it: checkpoint discovery, safe model downloads, exact-process lifecycle management, streaming chat, persistent conversations, runtime telemetry, logs, and copy-ready native API examples.
 
 It does not reimplement inference or place an API-compatibility shim in front of FreeToken. Chat and metrics use FreeToken's native endpoints directly.
 
@@ -49,8 +49,8 @@ It does not reimplement inference or place an API-compatibility shim in front of
 
 <table>
   <tr>
-    <td width="50%"><img src="docs/images/models.png" alt="FreeToken Web model library"></td>
-    <td width="50%"><img src="docs/images/chat.png" alt="FreeToken Web chat interface"></td>
+    <td width="50%"><img src="docs/images/models.png" alt="FreeToken WebUI model library"></td>
+    <td width="50%"><img src="docs/images/chat.png" alt="FreeToken WebUI chat interface"></td>
   </tr>
   <tr>
     <td align="center"><sub>Local checkpoint library</sub></td>
@@ -62,7 +62,9 @@ It does not reimplement inference or place an API-compatibility shim in front of
 
 ### Full Managed Mode — recommended
 
-Managed Mode packages FreeToken and the web application together. After the first start, downloading and switching models happens entirely in the UI.
+Managed Mode deploys two cooperating services: a web/control-plane image and a
+separate GPU-enabled FreeToken image. They share the model volume over the private
+Compose network; the web service never installs or launches `ft` locally.
 
 **Requirements:** Ubuntu Linux x86-64, NVIDIA Ampere or newer, driver r580+, Docker Engine with Compose v2, and the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html).
 
@@ -76,7 +78,7 @@ curl -fsSLO https://raw.githubusercontent.com/h8ntome/freetoken-webui/main/docke
 docker compose up -d
 ```
 
-This creates persistent `models`, `data`, and `hf-cache` directories beside the Compose file. Open `http://SERVER_IP:3000`, then use **Models → Discover** to download and load a checkpoint.
+This creates persistent `models`, `data`, and `hf-cache` directories beside the Compose file. Open `http://SERVER_IP:3000`, then use **Models → Discover** to download and load a checkpoint. Compose waits for the FreeToken control service healthcheck before starting Web UI.
 
 #### Clone the source
 
@@ -127,19 +129,21 @@ External Mode is intended for chat, API information, and monitoring. Download, l
 | Load, unload, restart, and switch | ✓ | — |
 | Safely delete unloaded models | ✓ | — |
 | Expose native FreeToken APIs | ✓ | Uses the existing endpoint |
-| Requires GPU access in the web container | ✓ | — |
+| Requires GPU access in the web container | — | — |
+| Requires GPU access in the FreeToken service | ✓ | — |
 
-The main [`docker-compose.yml`](docker-compose.yml) is the production Managed Mode deployment. [`docker-compose.external.yml`](docker-compose.external.yml) is the GPU-free external client. [`docker-compose.dev.yml`](docker-compose.dev.yml) builds the image locally for development.
+The main [`docker-compose.yml`](docker-compose.yml) is the production two-service Managed Mode deployment. [`docker-compose.external.yml`](docker-compose.external.yml) is the GPU-free external client. [`docker-compose.dev.yml`](docker-compose.dev.yml) builds both images locally for development.
 
 ## Docker installation
 
-The production Compose files pull:
+The production Compose files pull two images:
 
 ```text
 ghcr.io/h8ntome/freetoken-webui:latest
+ghcr.io/h8ntome/freetoken:latest
 ```
 
-No source checkout or local image build is required. To pin a release, set `IMAGE_TAG=v1.0.0` in an optional `.env` file. Images are published for `linux/amd64`, matching FreeToken's supported server platform.
+No source checkout or local image build is required. To pin a release, set `IMAGE_TAG=v1.0.0` and `FREETOKEN_IMAGE=ghcr.io/h8ntome/freetoken:v1.0.0` in an optional `.env` file. Images are published for `linux/amd64`, matching FreeToken's supported server platform.
 
 Useful commands:
 
@@ -147,8 +151,11 @@ Useful commands:
 # Current status
 docker compose ps
 
-# Application and managed FreeToken logs
-docker compose logs -f freetoken-web
+# Application logs
+docker compose logs -f freetoken-webui
+
+# GPU runtime logs
+docker compose logs -f freetoken
 
 # Pull and apply an update
 docker compose pull
@@ -171,8 +178,11 @@ Copy [`.env.example`](.env.example) and change only what your deployment needs.
 |---|---|---|
 | `WEB_PORT` | `3000` | Published web interface port. |
 | `WEB_BIND_ADDRESS` | `0.0.0.0` | Host interface for the web port. |
-| `FREETOKEN_PORT` | `1919` | Managed native inference API port. |
+| `FREETOKEN_PORT` | `1919` | Published managed native inference API port. |
 | `API_BIND_ADDRESS` | `0.0.0.0` | Host interface for the managed inference API. |
+| `FREETOKEN_IMAGE` | `ghcr.io/h8ntome/freetoken:latest` | GPU service image. |
+| `FREETOKEN_URL` | `http://freetoken:1919` | Internal managed inference URL. |
+| `FREETOKEN_CONTROL_URL` | `http://freetoken:1918` | Internal lifecycle supervisor URL. |
 | `FREETOKEN_EXTERNAL_URL` | `http://host.docker.internal:1919` | Server-side endpoint used by External Mode. |
 | `PUBLIC_API_BASE_URL` | empty | Client-reachable FreeToken URL shown on the API page. |
 | `MODELS_PATH` | `./models` | Persistent host model directory. |
@@ -183,12 +193,13 @@ Copy [`.env.example`](.env.example) and change only what your deployment needs.
 | `ADMIN_USERNAME` | `admin` | Management username. |
 | `ADMIN_PASSWORD` | empty | Required when authentication is enabled. |
 | `SECURE_COOKIES` | `false` | Set `true` when the UI is served over HTTPS. |
-| `IMAGE_TAG` | `latest` | GHCR image tag to deploy. |
+| `IMAGE_TAG` | `latest` | Web UI GHCR image tag to deploy. |
+| `ENGINE_PROXY_RETRIES` | `3` | Retries for transient engine connectivity failures. |
 | `FREETOKEN_EXTRA_ARGS` | empty | Trusted administrator-only flags appended to `ft serve`. |
 | `ENGINE_READY_TIMEOUT_SECONDS` | `900` | Maximum managed model startup time. |
 | `ENGINE_STOP_TIMEOUT_SECONDS` | `20` | Graceful shutdown window before forced termination. |
 
-`FREETOKEN_EXECUTABLE`, `ALLOWED_IMPORT_DIRS`, and `METRICS_INTERVAL_SECONDS` are advanced direct/development settings. Compose fixes the internal paths and bind host deliberately; configure host storage through the `*_PATH` values above.
+`ALLOWED_IMPORT_DIRS` and `METRICS_INTERVAL_SECONDS` are advanced direct/development settings. Compose fixes the internal paths and bind host deliberately; configure host storage through the `*_PATH` values above.
 
 ## Model management
 
@@ -209,7 +220,7 @@ The native flow is **Search → Download → progress → Library → Load**. Do
 
 ### Loading and deleting
 
-Load state advances through **Starting → Loading → Ready**. Ready is shown only after FreeToken's `/health` endpoint reports `ok`. A fresh deployment starts the control plane with no model process yet; after a download, use **Load** once to start FreeToken. If another process already owns port `1919`, Managed Mode refuses to replace or kill it and disables lifecycle controls.
+Load state advances through **Starting → Loading → Ready**. Ready is shown only after FreeToken's `/health` endpoint reports `ok`. A fresh deployment starts the control plane and the FreeToken supervisor with no model process; after a download, use **Load** once to ask the GPU service to start FreeToken. Model lifecycle is contained in that service, not in the web container.
 
 Deletion is limited to the configured model root. Absolute paths, `..`, malformed IDs, symlink traversal, and loaded-model deletion are rejected. The confirmation dialog shows the approximate disk space reclaimed; unload a running model as a separate action before deleting it.
 
@@ -237,7 +248,7 @@ curl http://SERVER_IP:1919/v1/chat/completions \
   }'
 ```
 
-FreeToken's inference API and FreeToken Web's management API have separate security properties. Restrict port `1919` to trusted clients or protect it with your reverse proxy. Management routes are documented in [`docs/management-api.md`](docs/management-api.md).
+FreeToken's inference API and FreeToken WebUI's management API have separate security properties. Restrict port `1919` to trusted clients or protect it with your reverse proxy. Management routes are documented in [`docs/management-api.md`](docs/management-api.md).
 
 ## Updating and persistence
 
@@ -266,13 +277,13 @@ Its `DATA_PATH` mount preserves chats and application state; model storage remai
 
 ## GPU and NVIDIA requirements
 
-Managed Mode follows FreeToken's current requirements: Linux x86-64, an NVIDIA Ampere-or-newer GPU, driver r580 or newer, and CUDA 13 support. The image includes the CUDA development toolchain because FreeToken compiles kernels on first use; an initial model load may take substantially longer than subsequent loads.
+Managed Mode follows FreeToken's current requirements: Linux x86-64, an NVIDIA Ampere-or-newer GPU, driver r580 or newer, and CUDA 13 support. The GPU-enabled FreeToken service includes the accelerator dependencies; an initial model load may take substantially longer than subsequent loads.
 
 Verify the deployment environment:
 
 ```bash
-docker compose exec freetoken-web nvidia-smi
-docker compose exec freetoken-web ft --version
+docker compose exec freetoken nvidia-smi
+docker compose exec freetoken ft --version
 curl -fsS http://127.0.0.1:3000/healthz
 curl -fsS http://127.0.0.1:1919/health
 ```
@@ -291,16 +302,16 @@ No Docker socket is mounted, and the UI cannot execute arbitrary shell commands.
 
 | Symptom | Check |
 |---|---|
-| Container exits immediately | If `AUTH_ENABLED=true`, `ADMIN_PASSWORD` must be non-empty. Run `docker compose logs freetoken-web`. |
-| GPU unavailable | Verify `nvidia-smi` on the host, NVIDIA Container Toolkit, driver r580+, and `docker compose exec freetoken-web nvidia-smi`. |
+| Container exits immediately | If `AUTH_ENABLED=true`, `ADMIN_PASSWORD` must be non-empty. Run `docker compose logs freetoken-webui` and `docker compose logs freetoken`. |
+| GPU unavailable | Verify `nvidia-smi` on the host, NVIDIA Container Toolkit, driver r580+, and `docker compose exec freetoken nvidia-smi`. |
 | Model remains loading | First compilation can be slow. Check Logs, RAM/VRAM, checkpoint completeness, and `ENGINE_READY_TIMEOUT_SECONDS`. |
-| Port `1919` already occupied | Stop the unowned server or use External Mode. FreeToken Web deliberately will not kill it. |
+| Port `1919` already occupied | Stop the unowned server or use External Mode. FreeToken WebUI deliberately will not kill it. |
 | Gated download fails | Accept the model terms on Hugging Face and configure a valid `HF_TOKEN`. |
 | Existing model is marked incomplete | Check `config.json`, weight files, and every filename in the Safetensors index. |
 | External Mode cannot connect | Test `FREETOKEN_EXTERNAL_URL` from the container and use `host.docker.internal` for a service on the Docker host. |
 | API examples show an internal URL | Set `PUBLIC_API_BASE_URL` to the client-reachable address. |
 
-For reproducible bug reports, include the image tag, GPU model, driver version, FreeToken Web logs, and the relevant model repository. Please remove tokens and private URLs before opening an [issue](https://github.com/h8ntome/freetoken-webui/issues).
+For reproducible bug reports, include the image tag, GPU model, driver version, FreeToken WebUI logs, and the relevant model repository. Please remove tokens and private URLs before opening an [issue](https://github.com/h8ntome/freetoken-webui/issues).
 
 ## Development
 
@@ -334,7 +345,7 @@ Issues and focused pull requests are welcome at [github.com/h8ntome/freetoken-we
 
 ## License
 
-FreeToken Web is licensed under the [Apache License 2.0](LICENSE).
+FreeToken WebUI is licensed under the [Apache License 2.0](LICENSE).
 
 ## Acknowledgements
 
@@ -342,4 +353,4 @@ FreeToken Web is licensed under the [Apache License 2.0](LICENSE).
 - [Hugging Face Hub](https://huggingface.co/) provides model discovery and checkpoint hosting.
 - The CUDA runtime image is distributed by [NVIDIA](https://catalog.ngc.nvidia.com/orgs/nvidia/containers/cuda).
 
-FreeToken Web is an independent community control plane and is not a replacement for FreeToken's own documentation, compatibility guidance, or licensing terms.
+FreeToken WebUI is an independent community control plane and is not a replacement for FreeToken's own documentation, compatibility guidance, or licensing terms.

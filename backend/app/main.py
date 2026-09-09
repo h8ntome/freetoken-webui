@@ -20,7 +20,7 @@ from pydantic import BaseModel, Field
 from .config import settings
 from .database import Database, get_db, init_database
 from .security import Principal, current_principal, init_auth, require_csrf
-from .services.downloads import DownloadManager
+from .services.downloads import DownloadManager, _hugging_face_error
 from .services.engine import EngineConflict, EngineManager
 from .services.library import ModelLibrary, catalog, safe_model_path
 from .services.metrics import MetricsService
@@ -95,7 +95,7 @@ async def lifespan(app: FastAPI):
         pass
 
 
-app = FastAPI(title="FreeToken Web Management API", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="FreeToken WebUI Management API", version="0.1.0", lifespan=lifespan)
 
 
 @app.exception_handler(EngineConflict)
@@ -111,8 +111,11 @@ async def value_error(_: Request, exc: ValueError):
 @app.get("/healthz")
 async def web_health():
     status = engine.status()
+    backend_status = status.get("health", {}).get("status")
     unhealthy = status["state"] == "failed" or (
         settings.freetoken_mode == "external" and status.get("health", {}).get("status") != "ok"
+    ) or (
+        settings.freetoken_mode == "managed" and backend_status is None
     )
     if unhealthy:
         return JSONResponse(
@@ -176,8 +179,10 @@ async def model_catalog(query: str = "", _: Principal = Depends(current_principa
 async def search_models(query: str, _: Principal = Depends(current_principal)):
     if len(query.strip()) < 2:
         return {"items": []}
-    api = HfApi(token=settings.hf_token)
     try:
+        # ``None`` deliberately means anonymous Hub access.  Public model
+        # discovery must not depend on an HF token being configured.
+        api = HfApi(token=settings.hf_token or None)
         result = await asyncio.to_thread(
             lambda: list(api.list_models(search=query, limit=20, sort="downloads", full=True))
         )
@@ -185,7 +190,7 @@ async def search_models(query: str, _: Principal = Depends(current_principal)):
         items = [{"repo": item.id, "downloads": item.downloads, "likes": item.likes, "updatedAt": item.last_modified, "pipeline": item.pipeline_tag, "compatibility": "verified" if item.id.lower() in verified else "unknown", "huggingFaceUrl": f"https://huggingface.co/{item.id}"} for item in result]
         return {"items": items}
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Hugging Face search failed: {exc}")
+        raise HTTPException(status_code=502, detail=_hugging_face_error(exc))
 
 
 @app.post("/api/models/download", status_code=202)
