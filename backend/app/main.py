@@ -110,7 +110,16 @@ async def value_error(_: Request, exc: ValueError):
 
 @app.get("/healthz")
 async def web_health():
-    return {"status": "ok", "engine": engine.status()["state"]}
+    status = engine.status()
+    unhealthy = status["state"] == "failed" or (
+        settings.freetoken_mode == "external" and status.get("health", {}).get("status") != "ok"
+    )
+    if unhealthy:
+        return JSONResponse(
+            {"status": "degraded", "engine": status},
+            status_code=503,
+        )
+    return {"status": "ok", "engine": status["state"]}
 
 
 @app.post("/api/auth/login")
@@ -170,7 +179,7 @@ async def search_models(query: str, _: Principal = Depends(current_principal)):
     api = HfApi(token=settings.hf_token)
     try:
         result = await asyncio.to_thread(
-            lambda: list(api.list_models(search=query, limit=20, sort="downloads", direction=-1, full=True))
+            lambda: list(api.list_models(search=query, limit=20, sort="downloads", full=True))
         )
         verified = {item["repo"].lower() for item in catalog()}
         items = [{"repo": item.id, "downloads": item.downloads, "likes": item.likes, "updatedAt": item.last_modified, "pipeline": item.pipeline_tag, "compatibility": "verified" if item.id.lower() in verified else "unknown", "huggingFaceUrl": f"https://huggingface.co/{item.id}"} for item in result]

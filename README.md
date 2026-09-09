@@ -209,7 +209,7 @@ The native flow is **Search → Download → progress → Library → Load**. Do
 
 ### Loading and deleting
 
-Load state advances through **Starting → Loading → Ready**. Ready is shown only after FreeToken's `/health` endpoint reports `ok`. If another process already owns port `1919`, Managed Mode refuses to replace or kill it and disables lifecycle controls.
+Load state advances through **Starting → Loading → Ready**. Ready is shown only after FreeToken's `/health` endpoint reports `ok`. A fresh deployment starts the control plane with no model process yet; after a download, use **Load** once to start FreeToken. If another process already owns port `1919`, Managed Mode refuses to replace or kill it and disables lifecycle controls.
 
 Deletion is limited to the configured model root. Absolute paths, `..`, malformed IDs, symlink traversal, and loaded-model deletion are rejected. The confirmation dialog shows the approximate disk space reclaimed; unload a running model as a separate action before deleting it.
 
