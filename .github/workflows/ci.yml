@@ -26,3 +26,15 @@ jobs:
         working-directory: frontend
       - run: npm run build
         working-directory: frontend
+      - name: Build and smoke-test GPU-free WebUI container
+        run: |
+          docker build -f docker/Dockerfile -t freetoken-webui:test .
+          docker run -d --name webui-test -e FREETOKEN_MODE=external -e FREETOKEN_EXTERNAL_URL=http://127.0.0.1:9 -p 3000:3000 freetoken-webui:test
+          for attempt in $(seq 1 30); do
+            if curl -fsS http://localhost:3000/healthz; then break; fi
+            sleep 2
+          done
+          curl -fsS http://localhost:3000/healthz
+          curl -fsS http://localhost:3000/api/auth/me
+          docker logs webui-test
+          docker rm -f webui-test

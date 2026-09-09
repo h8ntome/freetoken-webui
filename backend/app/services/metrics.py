@@ -28,30 +28,31 @@ class MetricsService:
             "cpu": {"percent": psutil.cpu_percent(interval=None), "cores": psutil.cpu_count(logical=True), "load": list(psutil.getloadavg()) if hasattr(psutil, "getloadavg") else []},
             "ram": {"usedBytes": vm.used, "availableBytes": vm.available, "totalBytes": vm.total, "percent": vm.percent},
             "storage": {"usedBytes": disk.used, "freeBytes": disk.free, "totalBytes": disk.total, "percent": round(disk.used / disk.total * 100, 1)},
-            "gpus": self._gpus(),
+            "gpus": [],
+            "source": "webui-host",
         }
         runtime: dict[str, Any] = {}
+        error = None
+        footprint = {}
         if self.engine.status()["state"] in {"ready", "external"}:
             try:
                 runtime = await self.engine.proxy_json("GET", "/v1/stats")
-            except Exception:
-                runtime = {}
-        point = {"timestamp": now, "cpu": system["cpu"]["percent"], "ram": system["ram"]["percent"], "gpu": system["gpus"][0]["utilization"] if system["gpus"] else None, "vram": system["gpus"][0]["memoryPercent"] if system["gpus"] else None, "decodeTps": (runtime.get("throughput") or {}).get("decode_tps", 0), "latency": (runtime.get("requests") or {}).get("p95_ms", 0)}
+            except Exception as exc:
+                error = str(exc)
+        if self.config.freetoken_mode == "managed":
+            try:
+                footprint = await self.engine._control_request("GET", "/engine/metrics")
+            except Exception as exc:
+                error = error or str(exc)
+        # Native stats expose identity/capacity, not utilization, temperature, or power.
+        # Do not query NVML inside the GPU-free WebUI and call it engine telemetry.
+        system["gpus"] = [{"index": gpu.get("index", i), "name": gpu.get("name"), "uuid": gpu.get("uuid"),
+                           "memoryTotalBytes": gpu.get("total_bytes"), "memoryUsedBytes": None,
+                           "memoryPercent": None, "utilization": None, "temperatureC": None, "powerWatts": None}
+                          for i, gpu in enumerate(runtime.get("gpus") or [])]
+        point = {"timestamp": now, "cpu": system["cpu"]["percent"], "ram": system["ram"]["percent"], "gpu": system["gpus"][0]["utilization"] if system["gpus"] else None, "vram": system["gpus"][0]["memoryPercent"] if system["gpus"] else None, "decodeTps": (runtime.get("throughput") or {}).get("decode_tps"), "latency": (runtime.get("requests") or {}).get("p95_ms")}
         self.history.append(point)
-        self._cached = {"timestamp": now, "system": system, "runtime": runtime, "history": list(self.history)}
+        self._cached = {"timestamp": now, "system": system, "runtime": runtime, "engineFootprint": footprint, "error": error, "history": list(self.history)}
         self._last = now
         return self._cached
-
-    def _gpus(self) -> list[dict[str, Any]]:
-        try:
-            import pynvml
-            pynvml.nvmlInit()
-            result = []
-            for idx in range(pynvml.nvmlDeviceGetCount()):
-                handle = pynvml.nvmlDeviceGetHandleByIndex(idx)
-                mem, util = pynvml.nvmlDeviceGetMemoryInfo(handle), pynvml.nvmlDeviceGetUtilizationRates(handle)
-                result.append({"index": idx, "name": pynvml.nvmlDeviceGetName(handle), "uuid": pynvml.nvmlDeviceGetUUID(handle), "utilization": util.gpu, "memoryUsedBytes": mem.used, "memoryTotalBytes": mem.total, "memoryPercent": round(mem.used / mem.total * 100, 1), "temperatureC": pynvml.nvmlDeviceGetTemperature(handle, pynvml.NVML_TEMPERATURE_GPU), "powerWatts": round(pynvml.nvmlDeviceGetPowerUsage(handle) / 1000, 1)})
-            return result
-        except Exception:
-            return []
 

@@ -15,7 +15,7 @@ def test_managed_engine_uses_service_dns_url(tmp_path: Path):
         freetoken_mode="managed",
     )
     assert settings.engine_url == "http://freetoken:1919"
-    assert settings.freetoken_control_url == "http://freetoken:1918"
+    assert settings.freetoken_control_url == "http://freetoken:1900"
 
 
 def test_custom_managed_url_is_preserved(tmp_path: Path):
@@ -65,14 +65,14 @@ def test_healthz_healthy_when_idle_in_managed_mode():
     assert response.json()["status"] == "ok"
 
 
-def test_healthz_degraded_when_engine_failed():
+def test_healthz_remains_live_when_engine_failed():
     from starlette.testclient import TestClient
     from app.main import app, engine
     engine._state = "failed"
     client = TestClient(app)
     response = client.get("/healthz")
-    assert response.status_code == 503
-    assert response.json()["status"] == "degraded"
+    assert response.status_code == 200
+    assert response.json()["status"] == "ok"
     # Reset state
     engine._state = "stopped"
 

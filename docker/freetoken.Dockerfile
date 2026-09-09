@@ -6,7 +6,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PATH=/opt/venv/bin:$PATH \
     PYTHONUNBUFFERED=1 \
     FREETOKEN_PORT=1919 \
-    FREETOKEN_CONTROL_PORT=1918
+    FREETOKEN_DAEMON_DIR=/state
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends python3 python3-pip python3-venv ca-certificates curl tini \
@@ -18,8 +18,9 @@ RUN python3 -m venv /opt/venv \
     && /opt/venv/bin/ft --version \
     && /opt/venv/bin/pip uninstall -y uv
 
-COPY docker/freetoken-entrypoint.py /opt/freetoken-entrypoint.py
-EXPOSE 1918 1919
-HEALTHCHECK --interval=10s --timeout=5s --start-period=20s --retries=6 CMD curl -fsS http://127.0.0.1:1918/healthz || exit 1
+# No patched FreeToken code or custom lifecycle server. Upstream owns ft serve.
+EXPOSE 1900 1919
+HEALTHCHECK --interval=10s --timeout=5s --start-period=20s --retries=6 CMD curl -fsS http://127.0.0.1:1900/health || exit 1
 ENTRYPOINT ["/usr/bin/tini", "--"]
-CMD ["python3", "/opt/freetoken-entrypoint.py"]
+# Upstream treats an empty env token as enabled auth; omit it when unset.
+CMD ["sh", "-c", "if [ -z \"${FREETOKEN_DAEMON_TOKEN:-}\" ]; then unset FREETOKEN_DAEMON_TOKEN; fi; exec ft daemon --host 0.0.0.0 --port 1900 --state-dir /state"]

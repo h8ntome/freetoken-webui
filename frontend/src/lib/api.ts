@@ -15,7 +15,7 @@ export async function api<T>(path: string, options: RequestInit = {}): Promise<T
   const text = await response.text()
   let value: any = null
   try { value = text ? JSON.parse(text) : null } catch { value = {detail: text} }
-  if (!response.ok) throw new ApiError(value?.detail || value?.error || `Request failed (${response.status})`, response.status)
+  if (!response.ok) throw new ApiError((typeof value?.detail === "string" ? value.detail : value?.detail ? JSON.stringify(value.detail) : typeof value?.error === "string" ? value.error : value?.error ? JSON.stringify(value.error) : `Request failed (${response.status})`), response.status)
   return value as T
 }
 

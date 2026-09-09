@@ -1,12 +1,15 @@
 services:
   freetoken-webui:
-    container_name: freetoken-webui
-    image: "ghcr.io/h8ntome/freetoken-webui:${IMAGE_TAG:-latest}"
-    pull_policy: always
+    image: "freetoken-webui:${IMAGE_TAG:-local}"
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    pull_policy: build
     restart: unless-stopped
     init: true
     environment:
       FREETOKEN_MODE: external
+      FREETOKEN_API_KEY: "${FREETOKEN_API_KEY:-}"
       FREETOKEN_EXTERNAL_URL: "${FREETOKEN_EXTERNAL_URL:-http://host.docker.internal:1919}"
       WEB_PORT: "3000"
       DATA_DIR: /data

@@ -10,25 +10,38 @@ from typing import Any
 from ..config import Settings
 
 
-# Architecture substrings (lowercased) that FreeToken is known to support.
-# Matched against HF model_type, architecture names, and tag strings.
-SUPPORTED_ARCHITECTURES = (
-    "deepseek", "qwen", "gptoss", "gpt_oss", "gpt-oss",
-    "gemma4", "gemma-4", "gemma_4",
-    "glm", "minimax", "muse",
-)
-
-# HF pipeline tags that represent text-generation models FreeToken can serve.
-SUPPORTED_PIPELINE_TAGS = {"text-generation", "text2text-generation"}
+# Exact architectures in the published upstream freetoken==0.1.2 wheel.
+# Main has additional architectures not yet in that wheel; do not advertise them.
+SUPPORTED_ARCHITECTURES = {
+    "DeepseekV4ForCausalLM",
+    "Gemma4ForCausalLM",
+    "Gemma4ForConditionalGeneration",
+    "Gemma4GGUFForCausalLM",
+    "Gemma4UnifiedForCausalLM",
+    "Gemma4UnifiedForConditionalGeneration",
+    "Glm4MoeForCausalLM",
+    "GlmMoeDsaForCausalLM",
+    "GptOssForCausalLM",
+    "LlamaForCausalLM",
+    "MiniMaxM2ForCausalLM",
+    "MiniMaxM3SparseForCausalLM",
+    "MiniMaxM3SparseForConditionalGeneration",
+    "Mistral3ForConditionalGeneration",
+    "MistralForCausalLM",
+    "MuseGlimmerForConditionalGeneration",
+    "Qwen2ForCausalLM",
+    "Qwen3ForCausalLM",
+    "Qwen3MoeForCausalLM",
+    "Qwen3_5ForConditionalGeneration",
+    "Qwen3_5MoeForConditionalGeneration",
+}
+SUPPORTED_PIPELINE_TAGS = {"text-generation", "image-text-to-text"}
 
 # Repositories confirmed to work with a specific FreeToken release.
 KNOWN_GOOD = [
     {"repo": "deepseek-ai/DeepSeek-V4-Flash-0731", "family": "DeepSeek-V4", "notes": "Requires the inference/config.json subdirectory."},
-    {"repo": "RedHatAI/GLM-5.3-Flash-NVFP4", "family": "GLM-5.3-Flash"},
     {"repo": "nvidia/GLM-5.2-NVFP4", "family": "GLM-5.2"},
     {"repo": "nvidia/GLM-4.7-NVFP4", "family": "GLM-4.7"},
-    {"repo": "Qwen/Qwen3.8-Flash-Next-FP8", "family": "Qwen3.8-Flash-Next", "notes": "Pins an approximately 47.7 GiB PLE table in host RAM."},
-    {"repo": "RadixArk/Qwen3.8-Flash-Next-NVFP4", "family": "Qwen3.8-Flash-Next", "notes": "Pins an approximately 47.7 GiB PLE table in host RAM."},
     {"repo": "Qwen/Qwen3.6-35B-A3B", "family": "Qwen3.6 MoE"},
     {"repo": "Qwen/Qwen3.6-35B-A3B-FP8", "family": "Qwen3.6 MoE"},
     {"repo": "nvidia/Qwen3.6-35B-A3B-NVFP4", "family": "Qwen3.6 MoE"},
@@ -45,7 +58,6 @@ KNOWN_GOOD = [
     {"repo": "openai/gpt-oss-20b", "family": "gpt-oss"},
     {"repo": "google/gemma-4-26B-A4B-it", "family": "Gemma-4"},
     {"repo": "nvidia/Gemma-4-26B-A4B-NVFP4", "family": "Gemma-4"},
-    {"repo": "google/gemma-4-12B-it", "family": "Gemma-4"},
     {"repo": "nvidia/Gemma-4-31B-IT-NVFP4", "family": "Gemma-4"},
     {"repo": "nvidia/MiniMax-M2.5-NVFP4", "family": "MiniMax-M2.5"},
     {"repo": "meta-models/Muse-Glimmer-30B", "family": "Muse-Glimmer"},
@@ -68,6 +80,11 @@ def safe_model_path(config: Settings, model_id: str, *, must_exist: bool = True)
     path = Path(os.path.abspath(config.models_dir / model_id))
     if not (path == config.models_dir or path.is_relative_to(config.models_dir)):
         raise ValueError("Path is outside configured model directories")
+    if path == config.models_dir:
+        raise ValueError("Model id must name a checkpoint, not the model storage root")
+    _safe_resolve(path, config.import_roots if must_exist else (config.models_dir,))
+    if not must_exist and path.is_symlink():
+        raise ValueError("Refusing to download through a linked model directory")
     if must_exist and not path.exists():
         raise FileNotFoundError("Model does not exist")
     if must_exist:
@@ -105,74 +122,44 @@ def _complete(path: Path) -> tuple[bool, str | None]:
     indexes = list(path.glob("*.safetensors.index.json"))
     if indexes:
         index = _read_json(indexes[0])
-        missing = [name for name in set((index.get("weight_map") or {}).values()) if not (path / name).is_file()]
+        weights = index.get("weight_map")
+        if not isinstance(weights, dict) or not weights:
+            return False, "Invalid or empty safetensors index"
+        for name in weights.values():
+            if not isinstance(name, str) or not (path / name).resolve().is_relative_to(path.resolve()):
+                return False, "Unsafe weight shard path in index"
+        missing = [name for name in set(weights.values()) if not (path / name).is_file() or (path / name).stat().st_size == 0]
         if missing:
             return False, f"Missing {len(missing)} weight shard(s)"
     elif not list(path.glob("*.safetensors")) and not list(path.glob("*.ftw")):
         return False, "No model weight files found"
+    if any(f.stat().st_size == 0 for f in path.glob("*.safetensors")):
+        return False, "Empty model weight file"
     return True, None
 
 
 def _compatibility(repo: str | None, architecture: str) -> str:
     if repo and repo.lower() in _VERIFIED_REPOS:
         return "verified"
-    marker = architecture.lower()
-    return "likely" if any(item in marker for item in SUPPORTED_ARCHITECTURES) else "unknown"
+    return "likely" if architecture in SUPPORTED_ARCHITECTURES else "unknown"
 
 
-def _architecture_compatible(marker: str) -> bool:
-    """Return True when the lowercased architecture/tag string matches a supported family."""
-    return any(item in marker for item in SUPPORTED_ARCHITECTURES)
-
-
-def classify_search_result(
-    repo_id: str,
-    pipeline_tag: str | None,
-    tags: list[str],
-    siblings: list[Any] | None,
-) -> dict[str, Any]:
-    """Classify an HF search result for FreeToken compatibility.
-
-    Returns a dict with ``compatibility``, ``hasSafetensors``, ``architecture``,
-    and ``unsupportedReason`` (only when unsupported).
-    """
-    # Verified repos bypass all heuristics.
+def classify_search_result(repo_id: str, pipeline_tag: str | None, tags: list[str],
+                           siblings: list[Any] | None, config: dict | None = None) -> dict[str, Any]:
+    has_weights = any(getattr(s, "rfilename", s if isinstance(s, str) else "").endswith(".safetensors") for s in (siblings or [])) or "safetensors" in tags
+    architecture = ((config or {}).get("architectures") or [None])[0]
     if repo_id.lower() in _VERIFIED_REPOS:
-        return {"compatibility": "verified", "hasSafetensors": True, "architecture": None, "unsupportedReason": None}
-
-    # Pipeline check — must be a text-generation model.
-    if pipeline_tag and pipeline_tag not in SUPPORTED_PIPELINE_TAGS:
-        return {"compatibility": "unsupported", "hasSafetensors": False, "architecture": pipeline_tag, "unsupportedReason": f"Pipeline type \"{pipeline_tag}\" is not a text-generation model."}
-
-    # Safetensors check — FreeToken requires safetensors weights.
-    has_safetensors = False
-    if siblings:
-        has_safetensors = any(
-            getattr(s, "rfilename", s if isinstance(s, str) else "").endswith(".safetensors")
-            for s in siblings
-        )
-    elif tags:
-        has_safetensors = "safetensors" in tags
-
-    if not has_safetensors:
-        return {"compatibility": "unsupported", "hasSafetensors": False, "architecture": None, "unsupportedReason": "No safetensors weights found. FreeToken requires the safetensors format."}
-
-    # Architecture check from tags.
-    detected_arch: str | None = None
-    tag_blob = " ".join(tags).lower() + " " + repo_id.lower()
-    if _architecture_compatible(tag_blob):
-        detected_arch = next((arch for arch in SUPPORTED_ARCHITECTURES if arch in tag_blob), None)
-        return {"compatibility": "likely", "hasSafetensors": True, "architecture": detected_arch, "unsupportedReason": None}
-
-    # GGUF-only repos.
-    if siblings and all(
-        getattr(s, "rfilename", s if isinstance(s, str) else "").endswith((".gguf", ".md", ".txt", ".json", ".yml", ".yaml", ".gitattributes"))
-        or getattr(s, "rfilename", s if isinstance(s, str) else "").startswith(".")
-        for s in siblings
-    ):
-        return {"compatibility": "unsupported", "hasSafetensors": False, "architecture": None, "unsupportedReason": "This repository appears to contain only GGUF weights, which FreeToken does not support."}
-
-    return {"compatibility": "unknown", "hasSafetensors": has_safetensors, "architecture": detected_arch, "unsupportedReason": None}
+        has_weights = True
+        level, reason = "verified", None
+    elif pipeline_tag and pipeline_tag not in SUPPORTED_PIPELINE_TAGS:
+        level, reason = "unsupported", f"Pipeline {pipeline_tag} is not supported for text generation."
+    elif not has_weights:
+        level, reason = "unsupported", "No safetensors weights found. This downloader supports HF safetensors checkpoints."
+    elif architecture in SUPPORTED_ARCHITECTURES:
+        level, reason = "likely", "Architecture is registered upstream; this exact checkpoint and quantization are not verified."
+    else:
+        level, reason = "unknown", "Not in the upstream verified catalog. Architecture and quantization compatibility are unverified."
+    return {"compatibility": level, "hasSafetensors": has_weights, "architecture": architecture, "unsupportedReason": reason}
 
 
 class ModelLibrary:
@@ -186,7 +173,13 @@ class ModelLibrary:
         for path in sorted(self.config.models_dir.iterdir(), key=lambda item: item.name.lower()):
             if path.name.startswith(".") or not path.is_dir():
                 continue
+            try:
+                _safe_resolve(path, self.config.import_roots)
+            except ValueError:
+                continue
             complete, issue = _complete(path)
+            if (path / ".download.json").exists():
+                complete, issue = False, "Download incomplete; resume from download history"
             config = _read_json(path / "config.json") or _read_json(path / "inference" / "config.json")
             text = config.get("text_config") if isinstance(config.get("text_config"), dict) else config
             archs = text.get("architectures") or config.get("architectures") or []

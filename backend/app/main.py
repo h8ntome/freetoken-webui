@@ -1,15 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+import codecs
+import logging
 import json
 import os
-import mimetypes
 import time
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
 
 from fastapi import Body, Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
@@ -18,11 +18,11 @@ from huggingface_hub import HfApi
 from pydantic import BaseModel, Field
 
 from .config import settings
-from .database import Database, get_db, init_database
+from .database import init_database
 from .security import Principal, current_principal, init_auth, require_csrf
 from .services.downloads import DownloadManager, _hugging_face_error
 from .services.engine import EngineConflict, EngineManager
-from .services.library import ModelLibrary, SUPPORTED_PIPELINE_TAGS, catalog, classify_search_result, safe_model_path
+from .services.library import ModelLibrary, catalog, classify_search_result, safe_model_path
 from .services.metrics import MetricsService
 
 
@@ -75,6 +75,8 @@ engine = EngineManager(settings)
 library = ModelLibrary(settings)
 downloads = DownloadManager(settings, database)
 metrics = MetricsService(settings, engine)
+downloads.on_log = engine._append_log
+logger = logging.getLogger(__name__)
 
 
 def require_managed_mode() -> None:
@@ -90,17 +92,31 @@ def require_managed_mode() -> None:
 async def lifespan(app: FastAPI):
     await engine.initialize()
     yield
-    if engine.status()["owned"] and engine.status()["state"] in {"starting", "loading", "ready"}:
-        # The exact child deliberately survives a web-process restart and is re-adopted on boot.
-        pass
+    await engine.close()
 
 
 app = FastAPI(title="FreeToken WebUI Management API", version="0.1.0", lifespan=lifespan)
 
 
+@app.exception_handler(Exception)
+async def unexpected_error(request: Request, exc: Exception):
+    detail = f"{type(exc).__name__}: {exc}"
+    for token in (settings.hf_token, settings.freetoken_daemon_token, settings.freetoken_api_key):
+        if token:
+            detail = detail.replace(token, "[redacted]")
+    engine._append_log("error", f"{request.method} {request.url.path}: {detail}")
+    return JSONResponse({"detail": detail}, status_code=500)
+
+
 @app.exception_handler(EngineConflict)
 async def engine_conflict(_: Request, exc: EngineConflict):
     return JSONResponse({"detail": str(exc), "code": "engine_conflict"}, status_code=409)
+
+
+@app.exception_handler(RuntimeError)
+async def runtime_error(request: Request, exc: RuntimeError):
+    engine._append_log("error", f"{request.method} {request.url.path}: {exc}")
+    return JSONResponse({"detail": str(exc)}, status_code=502)
 
 
 @app.exception_handler(ValueError)
@@ -115,22 +131,15 @@ async def file_not_found(_: Request, exc: FileNotFoundError):
 
 @app.get("/healthz")
 async def web_health():
-    status = engine.status()
-    backend_status = status.get("health", {}).get("status")
-    if status["state"] == "failed":
-        return JSONResponse(
-            {"status": "degraded", "engine": status},
-            status_code=503,
-        )
-    # External mode: degraded only when the remote server is unreachable.
-    if settings.freetoken_mode == "external" and backend_status not in {"ok", "loading"}:
-        return JSONResponse(
-            {"status": "degraded", "engine": status},
-            status_code=503,
-        )
-    # Managed mode with state="stopped" and empty health is the normal idle
-    # state — the WebUI itself is healthy; no model is loaded yet.
-    return {"status": "ok", "engine": status["state"]}
+    # Container liveness must not depend on a loaded model or a remote server.
+    return {"status": "ok"}
+
+
+@app.get("/readyz")
+async def readiness(_: Principal = Depends(current_principal)):
+    status = await engine.refresh()
+    ready = status.get("daemonReachable") if settings.freetoken_mode == "managed" else status["capabilities"]["chat"]
+    return JSONResponse({"status": "ok" if ready else "degraded", "engine": status}, status_code=200 if ready else 503)
 
 
 @app.post("/api/auth/login")
@@ -153,7 +162,7 @@ async def me(principal: Principal = Depends(current_principal)):
 @app.get("/api/bootstrap")
 async def bootstrap(request: Request, _: Principal = Depends(current_principal)):
     status = await engine.refresh()
-    found = library.scan(status.get("modelPath"))
+    found = await asyncio.to_thread(library.scan, status.get("modelPath"))
     gpu = (await metrics.read())["system"]["gpus"]
     return {
         "engine": status, "modelCount": len(found), "gpuDetected": bool(gpu), "gpus": gpu,
@@ -166,12 +175,12 @@ async def bootstrap(request: Request, _: Principal = Depends(current_principal))
 
 @app.get("/api/models")
 async def models(_: Principal = Depends(current_principal)):
-    return {"items": library.scan(engine.status().get("modelPath"))}
+    return {"items": await asyncio.to_thread(library.scan, engine.status().get("modelPath"))}
 
 
 @app.post("/api/models/rescan")
 async def rescan(_: Principal = Depends(require_csrf)):
-    return {"items": library.scan(engine.status().get("modelPath"))}
+    return {"items": await asyncio.to_thread(library.scan, engine.status().get("modelPath"))}
 
 
 @app.get("/api/models/catalog")
@@ -188,9 +197,7 @@ async def search_models(query: str, show_all: bool = False, _: Principal = Depen
     if len(query.strip()) < 2:
         return {"items": []}
     try:
-        # ``None`` deliberately means anonymous Hub access.  Public model
-        # discovery must not depend on an HF token being configured.
-        api = HfApi(token=settings.hf_token or None)
+        api = HfApi(token=settings.hf_token or False)
         result = await asyncio.to_thread(
             lambda: list(api.list_models(search=query, limit=30, sort="downloads", full=True))
         )
@@ -198,10 +205,10 @@ async def search_models(query: str, show_all: bool = False, _: Principal = Depen
         for item in result:
             tags = list(item.tags or [])
             siblings = list(item.siblings or []) if hasattr(item, "siblings") else None
-            compat = classify_search_result(item.id, item.pipeline_tag, tags, siblings)
+            compat = classify_search_result(item.id, item.pipeline_tag, tags, siblings, getattr(item, "config", None))
 
             # Hide definitely unsupported models unless the caller asked for them.
-            if compat["compatibility"] == "unsupported" and not show_all:
+            if compat["compatibility"] != "verified" and not show_all:
                 continue
 
             items.append({
@@ -221,7 +228,9 @@ async def search_models(query: str, show_all: bool = False, _: Principal = Depen
         items.sort(key=lambda x: order.get(x["compatibility"], 9))
         return {"items": items}
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=_hugging_face_error(exc))
+        message = _hugging_face_error(exc)
+        engine._append_log("error", f"Model search failed: {message}")
+        raise HTTPException(status_code=502, detail=message) from exc
 
 
 @app.post("/api/models/download", status_code=202)
@@ -235,6 +244,11 @@ async def cancel_job(job_id: str, _: Principal = Depends(require_csrf)):
     require_managed_mode()
     downloads.cancel(job_id)
     return {"ok": True}
+
+
+@app.get("/api/jobs")
+async def list_jobs(_: Principal = Depends(current_principal)):
+    return {"items": [database.job(row["id"]) for row in database.all("SELECT id FROM jobs ORDER BY created_at DESC LIMIT 50")]}
 
 
 @app.get("/api/jobs/{job_id}")
@@ -255,7 +269,14 @@ async def import_model(body: ImportBody, _: Principal = Depends(require_csrf)):
 async def delete_model(model_id: str, _: Principal = Depends(require_csrf)):
     require_managed_mode()
     path = safe_model_path(settings, model_id)
-    active = engine.status().get("modelPath")
+    if downloads.active(model_id):
+        raise HTTPException(status_code=409, detail="Cancel the active download before deleting this checkpoint")
+    status = await engine.refresh()
+    if not status.get("daemonReachable"):
+        raise HTTPException(status_code=409, detail="Cannot verify the active model while the daemon is unreachable")
+    if downloads.active(model_id):
+        raise HTTPException(status_code=409, detail="Cancel the active download before deleting this checkpoint")
+    active = status.get("modelPath")
     if active and Path(active).resolve(strict=False) == path.resolve(strict=False):
         raise HTTPException(status_code=409, detail="Model is currently loaded. Unload it before deleting it.")
     return {"deleted": True, "recoveredBytes": library.delete(model_id)}
@@ -270,6 +291,8 @@ async def engine_status(_: Principal = Depends(current_principal)):
 async def load_model(model_id: str, body: LoadBody, _: Principal = Depends(require_csrf)):
     require_managed_mode()
     path = safe_model_path(settings, model_id)
+    if downloads.active(model_id):
+        raise HTTPException(status_code=409, detail="Wait for the download to finish before loading")
     return await (engine.switch(path, body.options) if body.switch else engine.start(path, body.options))
 
 
@@ -376,11 +399,12 @@ async def chat_completion(body: ChatRequest, _: Principal = Depends(require_csrf
 
     async def stream():
         content, reasoning, usage = [], [], None
+        decoder = codecs.getincrementaldecoder("utf-8")()
         try:
             buffer = ""
             async for chunk in engine.chat_stream(payload):
-                yield chunk
-                buffer += chunk.decode(errors="replace")
+                buffer += decoder.decode(chunk)
+                buffer = buffer.replace("\r\n", "\n")
                 while "\n\n" in buffer:
                     event, buffer = buffer.split("\n\n", 1)
                     for line in event.splitlines():
@@ -398,12 +422,15 @@ async def chat_completion(body: ChatRequest, _: Principal = Depends(require_csrf
                             if delta.get("reasoning_content") or delta.get("reasoning"):
                                 reasoning.append(delta.get("reasoning_content") or delta.get("reasoning"))
                             usage = doc.get("usage") or usage
-                        except (ValueError, TypeError):
-                            pass
+                        except (ValueError, TypeError) as exc:
+                            raise RuntimeError(f"Invalid FreeToken stream event: {exc}") from exc
+                yield chunk
         except Exception as exc:
+            engine._append_log("error", f"Chat {body.chatId}: {exc}")
             yield f"event: error\ndata: {json.dumps({'error': str(exc)})}\n\n".encode()
-            return
-        database.execute("INSERT INTO messages VALUES (?,?,?,?,?,?,?)", (str(uuid.uuid4()), body.chatId, "assistant", "".join(content), "".join(reasoning) or None, json.dumps(usage) if usage else None, time.time()))
+        finally:
+            if content or reasoning:
+                database.execute("INSERT INTO messages VALUES (?,?,?,?,?,?,?)", (str(uuid.uuid4()), body.chatId, "assistant", "".join(content), "".join(reasoning) or None, json.dumps(usage) if usage else None, time.time()))
         title = chat["title"]
         if title == "New chat" and user:
             title = str(user.get("content", "New chat"))[:52].strip() or "New chat"

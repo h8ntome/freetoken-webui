@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Activity, Boxes, Braces, ChevronLeft, Cpu, Gauge, Menu, MessageSquare, Moon, ScrollText, Settings as SettingsIcon, Sun } from 'lucide-react'
 import { api, post, setCsrf } from './lib/api'
 import type { EngineStatus, Metrics, Model } from './types'
@@ -28,14 +28,17 @@ export default function App() {
   const [notice,setNotice]=useState<{text:string;bad?:boolean}|null>(null)
 
   const toast=useCallback((text:string,bad=false)=>{setNotice({text,bad});setTimeout(()=>setNotice(null),3500)},[])
+  const refreshing=useRef(false)
   const refresh=useCallback(async()=>{
+    if(refreshing.current)return
+    refreshing.current=true
     try {
       const [e,m,mt]=await Promise.all([api<EngineStatus>('/api/engine/status'),api<{items:Model[]}>('/api/models'),api<Metrics>('/api/metrics')])
       setEngine(e);setModels(m.items);setMetrics(mt)
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unable to reach the WebUI backend'
       setEngine(current => ({...current, state: 'failed', error: message}))
-    }
+    } finally { refreshing.current=false }
   },[])
   useEffect(()=>{api<any>('/api/auth/me').then(v=>{setMe(v);setCsrf(v.csrfToken)}).catch(()=>setMe(null)).finally(()=>setAuthChecked(true))},[])
   useEffect(()=>{if(!me)return;refresh();const id=setInterval(refresh,2500);return()=>clearInterval(id)},[me,refresh])

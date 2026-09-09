@@ -2,13 +2,10 @@ import { FormEvent, useEffect, useRef, useState } from "react";
 import {
   Bot,
   ChevronDown,
-  Copy,
   CornerDownLeft,
-  Edit3,
   Menu,
   MessageSquarePlus,
   PanelLeftClose,
-  RefreshCw,
   Settings2,
   Square,
   Trash2,
@@ -65,9 +62,10 @@ export default function Chat({
   useEffect(() => {
     loadChats().then(async () => {
       const v = await api<{ items: ChatSummary[] }>("/api/chats");
-      if (v.items[0]) select(v.items[0].id);
-      else create();
-    });
+      if (v.items[0]) await select(v.items[0].id);
+      else await create();
+    }).catch(e => toast(e.message, true));
+    return () => abort.current?.abort();
   }, []);
   useEffect(() => {
     end.current?.scrollIntoView({ behavior: generating ? "auto" : "smooth" });
@@ -75,7 +73,7 @@ export default function Chat({
   const send = async (e?: FormEvent, override?: string) => {
     e?.preventDefault();
     const text = (override ?? input).trim();
-    if (!text || generating || !chat) return;
+    if (!text || generating || !chat || !ready) return;
     const user: Message = { role: "user", content: text };
     const messages = [
       ...(chat.messages || []).map((m: Message) => ({
@@ -119,6 +117,7 @@ export default function Chat({
         const { done, value } = await reader.read();
         if (done) break;
         buffer += decoder.decode(value, { stream: true });
+        buffer = buffer.replace(/\r\n/g, "\n");
         while (buffer.includes("\n\n")) {
           const boundary = buffer.indexOf("\n\n");
           const event = buffer.slice(0, boundary);
@@ -133,7 +132,7 @@ export default function Chat({
               } catch {
                 continue;
               }
-              if (doc.error) throw new Error(doc.error);
+              if (doc.error) throw new Error(typeof doc.error === "string" ? doc.error : doc.error.message || JSON.stringify(doc.error));
               const d = doc.choices?.[0]?.delta || {};
               content += d.content || "";
               reasoning += d.reasoning_content || d.reasoning || "";
@@ -147,6 +146,7 @@ export default function Chat({
     } catch (e: any) {
       if (e.name !== "AbortError") toast(e.message, true);
     } finally {
+      await select(chat.id).catch(e => toast(e.message, true));
       setGenerating(false);
       setDraft("");
       abort.current = null;
@@ -156,12 +156,7 @@ export default function Chat({
     await del(`/api/chats/${id}`);
     setChat(null);
     await loadChats();
-    create();
-  };
-  const editRetry = (index: number) => {
-    const msg = chat.messages[index];
-    setInput(msg.content);
-    setChat({ ...chat, messages: chat.messages.slice(0, index) });
+    await create();
   };
   const ready =
     (engine.state === "ready" || engine.state === "external") &&
@@ -175,7 +170,7 @@ export default function Chat({
             <PanelLeftClose />
           </button>
         </header>
-        <button className="new-chat" onClick={create}>
+        <button className="new-chat" disabled={generating} onClick={() => create().catch(e => toast(e.message, true))}>
           <MessageSquarePlus />
           New chat
         </button>
@@ -183,7 +178,7 @@ export default function Chat({
           {chats.map((c) => (
             <button
               className={chat?.id === c.id ? "active" : ""}
-              onClick={() => select(c.id)}
+              disabled={generating} onClick={() => select(c.id).catch(e => toast(e.message, true))}
               key={c.id}
             >
               <span>{c.title}</span>
@@ -220,7 +215,7 @@ export default function Chat({
             {chat && (
               <button
                 className="icon-button danger"
-                onClick={() => remove(chat.id)}
+                disabled={generating} onClick={() => remove(chat.id).catch(e => toast(e.message, true))}
               >
                 <Trash2 />
               </button>
@@ -241,7 +236,7 @@ export default function Chat({
                   patch(`/api/chats/${chat.id}`, {
                     systemPrompt: settings.systemPrompt,
                     settings,
-                  })
+                  }).catch(e => toast(e.message, true))
                 }
               />
             </label>
@@ -351,22 +346,7 @@ export default function Chat({
                     </ReactMarkdown>
                     <div className="message-actions">
                       <CopyButton value={m.content} />
-                      {m.role === "user" && (
-                        <button onClick={() => editRetry(i)}>
-                          <Edit3 />
-                          Edit & retry
-                        </button>
-                      )}
-                      {m.role === "assistant" && i > 0 && (
-                        <button
-                          onClick={() =>
-                            send(undefined, chat.messages[i - 1].content)
-                          }
-                        >
-                          <RefreshCw />
-                          Regenerate
-                        </button>
-                      )}
+
                     </div>
                   </div>
                 </article>

@@ -2,10 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
+import logging
 import shlex
-import signal
-import socket
 import time
 from collections import deque
 from pathlib import Path
@@ -14,6 +12,9 @@ from typing import Any, AsyncIterator
 import httpx
 
 from ..config import Settings
+from .library import _complete
+
+logger = logging.getLogger(__name__)
 
 
 class EngineConflict(RuntimeError):
@@ -21,246 +22,188 @@ class EngineConflict(RuntimeError):
 
 
 class EngineManager:
-    STATES = {"stopped", "starting", "loading", "ready", "stopping", "failed", "external"}
+    """Thin HTTP client for upstream ft daemon; inference goes directly to ft serve."""
 
     def __init__(self, config: Settings):
         self.config = config
         self._lock = asyncio.Lock()
-        self._process: asyncio.subprocess.Process | None = None
         self._state = "stopped"
-        self._model_path: str | None = None
-        self._model_name: str | None = None
-        self._started_at: float | None = None
-        self._error: str | None = None
-        self._exit_code: int | None = None
+        self._model_path = self._model_name = self._started_at = self._error = self._exit_code = None
         self._health: dict[str, Any] = {}
         self._logs: deque[dict[str, Any]] = deque(maxlen=5000)
-        self._log_seq = 0
-        self._task: asyncio.Task | None = None
-        self._intentional_stop = False
-        self._state_path = config.data_dir / "engine.json"
+        self._log_seq = int(time.time() * 1000)
+        self._log_task: asyncio.Task | None = None
+        self._daemon_reachable = False
+        self._runtime_error: str | None = None
+
+    @property
+    def control_headers(self) -> dict[str, str]:
+        token = self.config.freetoken_daemon_token
+        return {"X-FT-Token": token} if token else {}
+
+    @property
+    def inference_headers(self) -> dict[str, str]:
+        token = self.config.freetoken_api_key
+        return {"Authorization": f"Bearer {token}"} if token else {}
 
     async def initialize(self) -> None:
-        if self.config.freetoken_mode == "external":
-            self._state = "external"
-            await self.refresh()
-            return
-        # Managed mode owns the *service contract*, not a child process.  The
-        # FreeToken process lives in the dedicated GPU service and is reached
-        # over the Compose network.
-        self._write_state({})
-        self._state = "stopped"
         await self.refresh()
+        if self.config.freetoken_mode == "managed":
+            self._log_task = asyncio.create_task(self._follow_logs())
 
-    def _read_state(self) -> dict[str, Any]:
-        try:
-            return json.loads(self._state_path.read_text())
-        except (OSError, ValueError):
-            return {}
+    async def close(self) -> None:
+        if self._log_task:
+            self._log_task.cancel()
+            await asyncio.gather(self._log_task, return_exceptions=True)
 
-    def _write_state(self, value: dict[str, Any]) -> None:
-        tmp = self._state_path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(value, indent=2))
-        tmp.replace(self._state_path)
-
-    def _is_owned_process(self, pid: int, model: str | None) -> bool:
-        try:
-            args = [part.decode(errors="replace") for part in Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0") if part]
-            joined = " ".join(args)
-            is_ft = any(Path(arg).name == "ft" for arg in args) or "freetoken" in joined
-            return is_ft and "serve" in args and (not model or model in args)
-        except OSError:
-            return False
-
-    def _port_open(self) -> bool:
-        try:
-            host = "127.0.0.1" if self.config.freetoken_host in {"0.0.0.0", "::"} else self.config.freetoken_host
-            with socket.create_connection((host, self.config.freetoken_port), timeout=.3):
-                return True
-        except OSError:
-            return False
-
-    async def start(self, model_path: Path, options: dict[str, Any] | None = None) -> dict[str, Any]:
-        if self.config.freetoken_mode != "managed" or self._state == "external":
-            raise EngineConflict("Engine lifecycle is unavailable in external or unowned mode")
-        async with self._lock:
-            if self._state in {"starting", "loading", "stopping"}:
-                raise EngineConflict(f"Engine is currently {self._state}")
-            self._state, self._error, self._exit_code = "starting", None, None
-            self._intentional_stop = False
-            self._model_path, self._model_name = str(model_path), model_path.name
-            self._started_at = time.time()
-            self._append_log("event", f"Starting FreeToken for {model_path.name}")
-            try:
-                await self._control_request(
-                    "POST",
-                    "/load",
-                    {"model": str(model_path), "options": options or {}},
-                )
-            except Exception as exc:
-                self._state, self._error = "failed", f"Could not start the FreeToken service: {exc}"
-                raise RuntimeError(self._error) from exc
-            self._write_state({"model": str(model_path), "startedAt": self._started_at})
-        return self.status()
-
-    def _build_command(self, model_path: Path, options: dict[str, Any]) -> list[str]:
-        argv = [self.config.freetoken_executable, "serve", "--model", str(model_path), "--host", self.config.freetoken_host, "--port", str(self.config.freetoken_port), "--served-model-name", model_path.name]
+    def _build_args(self, model_path: Path, options: dict[str, Any]) -> list[str]:
         allowed = {
-            "maxRunningRequests": "--max-running-requests", "maxOutputTokens": "--max-output-tokens",
-            "maxSequenceLength": "--max-seq-len-override", "maxPrefillLength": "--max-prefill-length", "memoryRatio": "--memory-ratio",
-            "moeBackend": "--moe-backend", "kvTokens": "--num-tokens", "moeCacheRate": "--moe-cache-rate",
+            "gpu": "--gpu", "maxRunningRequests": "--max-running-requests",
+            "maxOutputTokens": "--max-output-tokens", "maxSequenceLength": "--max-seq-len-override",
+            "maxPrefillLength": "--max-prefill-length", "memoryRatio": "--memory-ratio",
+            "moeBackend": "--moe-strategy", "kvTokens": "--num-tokens", "moeCacheRate": "--moe-cache-rate",
         }
+        if set(options) - allowed.keys():
+            raise ValueError("Unsupported engine options: " + ", ".join(sorted(set(options) - allowed.keys())))
+        args = ["--host", "0.0.0.0", "--served-model-name", model_path.name]
         for key, flag in allowed.items():
             value = options.get(key)
             if value is not None and value != "auto" and value != "":
-                argv.extend((flag, str(value)))
-        if self.config.freetoken_extra_args:
-            argv.extend(shlex.split(self.config.freetoken_extra_args))
-        return argv
+                args.extend([flag, str(value)])
+        return args + shlex.split(self.config.freetoken_extra_args)
+
+    async def _load(self, model_path: Path, options: dict[str, Any] | None, switch: bool) -> dict[str, Any]:
+        if self.config.freetoken_mode != "managed":
+            raise EngineConflict("Engine lifecycle is unavailable in external mode")
+        if (model_path / ".download.json").exists():
+            raise ValueError("Download is incomplete; resume it before loading")
+        complete, issue = _complete(model_path)
+        if not complete:
+            raise ValueError(issue or "Checkpoint is incomplete")
+        args = self._build_args(model_path, options or {})
+        # Mapping is explicit when the daemon sees a different shared-volume mount path.
+        remote = self.config.freetoken_models_dir / model_path.relative_to(self.config.models_dir)
+        async with self._lock:
+            if self._state in {"starting", "loading", "stopping"}:
+                raise EngineConflict(f"Engine is currently {self._state}")
+            try:
+                await self._control_request("POST", "/engine/switch" if switch else "/engine/start",
+                                            {"model": str(remote), "port": self.config.freetoken_port,
+                                             "args": args})
+            except Exception as exc:
+                self._append_log("error", f"Model load failed: {exc}")
+                await self.refresh()
+                raise
+            self._state, self._error = "starting", None
+            self._model_path, self._model_name = str(model_path), model_path.name
+            self._started_at = time.time()
+            self._append_log("event", f"Upstream daemon accepted model {remote}")
+        return await self.refresh()
+
+    async def start(self, model_path: Path, options: dict[str, Any] | None = None) -> dict[str, Any]:
+        return await self._load(model_path, options, False)
 
     async def switch(self, model_path: Path, options: dict[str, Any] | None = None) -> dict[str, Any]:
-        await self.stop()
-        return await self.start(model_path, options)
+        return await self._load(model_path, options, True)
 
     async def stop(self) -> dict[str, Any]:
-        if self.config.freetoken_mode != "managed" or self._state == "external":
-            raise EngineConflict("This control plane does not own the engine")
+        if self.config.freetoken_mode != "managed":
+            raise EngineConflict("Engine lifecycle is unavailable in external mode")
         async with self._lock:
-            # Kept for safely draining a process adopted by an older image
-            # during an upgrade. New managed starts always use the remote
-            # supervisor and never populate ``_process``.
-            if self._process and self._process.returncode is None:
-                proc = self._process
-                self._state = "stopping"
-                self._intentional_stop = True
-                try:
-                    os.killpg(proc.pid, signal.SIGTERM)
-                    await asyncio.wait_for(proc.wait(), timeout=self.config.engine_stop_timeout_seconds)
-                except (ProcessLookupError, asyncio.TimeoutError):
-                    if proc.returncode is None:
-                        os.killpg(proc.pid, signal.SIGKILL)
-                self._state, self._process, self._health = "stopped", None, {}
-                self._write_state({})
-                return self.status()
-            self._state = "stopping"
-            self._intentional_stop = True
-            self._append_log("event", "Stopping FreeToken gracefully")
             try:
-                await self._control_request("POST", "/unload")
+                await self._control_request("POST", "/engine/stop", {})
             except Exception as exc:
-                self._state, self._error = "failed", f"Could not stop the FreeToken service: {exc}"
-                raise RuntimeError(self._error) from exc
-        self._state, self._process, self._health = "stopped", None, {}
-        self._write_state({})
-        return self.status()
-
-    async def _supervise(self, proc: asyncio.subprocess.Process) -> None:
-        assert proc.stdout is not None
-        log_task = asyncio.create_task(self._consume_logs(proc.stdout))
-        health_task = asyncio.create_task(self._readiness_loop(proc))
-        code = await proc.wait()
-        await log_task
-        health_task.cancel()
-        if self._intentional_stop or self._state == "stopping":
-            self._state = "stopped"
-        else:
-            self._state = "failed"
-            self._error = self._useful_log_error() or f"FreeToken exited with code {code}"
-            self._append_log("error", self._error)
-        self._exit_code, self._process = code, None
-        self._write_state({})
-
-    async def _watch_adopted(self, pid: int) -> None:
-        while self._is_owned_process(pid, self._model_path):
-            await self.refresh()
-            await asyncio.sleep(1)
-        if self._state not in {"stopped", "stopping"}:
-            self._state, self._error = "failed", "Previously managed FreeToken process disappeared"
-        self._write_state({})
-
-    async def _consume_logs(self, stream: asyncio.StreamReader) -> None:
-        async for raw in stream:
-            text = raw.decode(errors="replace").rstrip()
-            level = "error" if any(x in text.lower() for x in ("error", "traceback", "cuda out of memory")) else ("warning" if "warn" in text.lower() else "info")
-            self._append_log(level, text)
-
-    async def _readiness_loop(self, proc: asyncio.subprocess.Process) -> None:
-        deadline = time.monotonic() + self.config.engine_ready_timeout_seconds
-        while proc.returncode is None and time.monotonic() < deadline:
-            await self.refresh()
-            if self._state in {"ready", "failed"}:
-                return
-            await asyncio.sleep(.75)
-        if proc.returncode is None and self._state != "ready":
-            self._state = "failed"
-            self._error = "FreeToken did not become ready before the configured timeout"
-            self._append_log("error", self._error)
+                self._append_log("error", f"Model stop failed: {exc}")
+                await self.refresh()
+                raise
+        return await self.refresh()
 
     async def refresh(self) -> dict[str, Any]:
+        managed = self.config.freetoken_mode == "managed"
         try:
-            doc = await self._request_json("GET", self.config.engine_url, "/health")
+            if managed:
+                st = await self._control_request("GET", "/engine/status")
+                self._daemon_reachable = True
+                remote = st.get("model")
+                self._model_name = Path(remote).name if remote else None
+                self._model_path = None
+                if remote and st.get("running"):
+                    try:
+                        self._model_path = str(self.config.models_dir / Path(remote).relative_to(self.config.freetoken_models_dir))
+                    except ValueError:
+                        pass
+                self._exit_code = st.get("lastExitCode")
+                self._started_at = time.time() - st.get("uptimeS", 0) if st.get("running") else None
+                if not st.get("running"):
+                    self._health = {}
+                    self._state = "starting" if st.get("starting") else "stopping" if st.get("stopping") else "failed" if self._exit_code not in (None, 0) else "stopped"
+                    self._error = f"FreeToken exited with code {self._exit_code} ({st.get('lastExitReason')}). {self._runtime_error or 'See engine logs.'}" if self._state == "failed" else None
+                    return self.status()
+            doc = await self._request_json("GET", self.config.engine_url, "/health", retries=1)
             self._health = doc
-            if doc.get("status") == "ok":
-                self._state = "ready" if self.config.freetoken_mode == "managed" and self._state != "external" else "external"
-                self._model_name = doc.get("model") or self._model_name
-                self._error = None
-            elif doc.get("status") == "loading":
-                self._state = "loading"
-            elif doc.get("status") == "stopped":
-                self._state = "stopped" if self.config.freetoken_mode == "managed" else "external"
-                self._error = None
-            elif doc.get("status") == "error":
-                self._state, self._error = "failed", doc.get("message") or "FreeToken reported a fatal error"
-        except httpx.ConnectError:
-            self._health = {}
-            if self.config.freetoken_mode == "external":
-                self._error = f"Cannot reach the external FreeToken server at {self.config.engine_url}. Verify the address and that FreeToken is running."
-            elif self._state not in {"starting", "loading"}:
-                self._error = f"Cannot connect to the managed FreeToken service at {self.config.engine_url}. The service may be starting or restarting."
-        except httpx.TimeoutException:
-            self._health = {}
-            if self._state not in {"starting", "loading"}:
-                self._error = f"FreeToken at {self.config.engine_url} did not respond in time. It may still be initializing."
+            self._error = None
+            self._model_name = doc.get("model") or self._model_name
+            state = doc.get("status")
+            self._state = ("ready" if managed else "external") if state == "ok" else "loading" if state == "loading" else "stopped" if state == "stopped" else "failed"
+            if self._state == "failed":
+                self._error = doc.get("message") or f"FreeToken health: {doc}"
         except Exception as exc:
             self._health = {}
-            if self.config.freetoken_mode == "external":
-                self._error = f"Cannot reach the external FreeToken server at {self.config.engine_url}: {exc}"
-            elif self._state not in {"starting", "loading"}:
-                self._error = f"Cannot reach the managed FreeToken service at {self.config.engine_url}: {exc}"
+            self._error = str(exc)
+            self._state = "failed"
+            if managed and 'st' in locals() and st.get("running"):
+                self._state = "loading"
+                if (st.get("uptimeS") or 0) > self.config.engine_ready_timeout_seconds:
+                    self._state = "failed"
+                    self._error = f"Model did not become ready within {self.config.engine_ready_timeout_seconds}s: {exc}"
+            elif managed:
+                self._daemon_reachable = False
         return self.status()
 
     def status(self) -> dict[str, Any]:
         progress = self._health.get("progress") or {}
-        total = progress.get("total_bytes") or 0
+        total = progress.get("total_bytes", progress.get("totalBytes", 0)) or 0
+        done = progress.get("done_bytes", progress.get("doneBytes", 0)) or 0
         reachable = self._health.get("status") == "ok"
         managed = self.config.freetoken_mode == "managed"
-        owned = managed and self._state != "external"
         return {
-            "state": self._state, "mode": self.config.freetoken_mode, "owned": owned,
+            "state": self._state, "mode": self.config.freetoken_mode, "owned": managed,
             "model": self._model_name, "modelPath": self._model_path, "pid": None,
             "startedAt": self._started_at, "exitCode": self._exit_code, "error": self._error,
-            "phase": self._health.get("phase"), "progress": {"doneBytes": progress.get("done_bytes", 0), "totalBytes": total, "percent": round(progress.get("done_bytes", 0) / total * 100, 1) if total else None},
-            "health": self._health,
-            "capabilities": {
-                "chat": reachable,
-                "monitoring": reachable,
-                "localModels": managed,
-                "downloads": managed,
-                "lifecycle": owned,
-                "deleteModels": managed,
-            },
+            "phase": self._health.get("phase"), "progress": {"doneBytes": done, "totalBytes": total, "percent": round(done / total * 100, 1) if total else None},
+            "health": self._health, "daemonReachable": self._daemon_reachable,
+            "capabilities": {"chat": reachable, "monitoring": reachable, "localModels": managed,
+                             "downloads": managed, "lifecycle": managed, "deleteModels": managed},
         }
 
     def _append_log(self, level: str, message: str) -> None:
         self._log_seq += 1
         self._logs.append({"id": self._log_seq, "timestamp": time.time(), "level": level, "message": message})
+        getattr(logger, level if level in {"info", "warning", "error"} else "info")("%s", message)
 
     def logs(self, since: int = 0, limit: int = 1000) -> list[dict[str, Any]]:
         return [item for item in self._logs if item["id"] > since][-min(max(limit, 1), 2000):]
 
-    def _useful_log_error(self) -> str | None:
-        errors = [x["message"] for x in self._logs if x["level"] == "error"]
-        return errors[-1][-1000:] if errors else None
+    async def _follow_logs(self) -> None:
+        # Upstream ring cursors reset when the daemon restarts. Replay on reconnect.
+        while True:
+            try:
+                async with httpx.AsyncClient(timeout=httpx.Timeout(10, read=30)) as client:
+                    async with client.stream("GET", f"{self.config.freetoken_control_url}/engine/logs", headers=self.control_headers) as response:
+                        response.raise_for_status()
+                        async for line in response.aiter_lines():
+                            if line.startswith("data:"):
+                                rec = json.loads(line[5:])
+                                message = rec.get("text") or json.dumps(rec)
+                                level = "error" if any(x in message.lower() for x in ("error", "traceback", "out of memory")) else "info"
+                                if "serve started" in message:
+                                    self._runtime_error = None
+                                elif level == "error":
+                                    self._runtime_error = message
+                                self._append_log(level, message)
+            except Exception as exc:
+                self._append_log("warning", f"Engine log connection interrupted: {exc}; reconnecting in 5s")
+                await asyncio.sleep(5)
 
     async def proxy_json(self, method: str, path: str, json_body: Any = None) -> Any:
         return await self._request_json(method, self.config.engine_url, path, json_body, retries=1)
@@ -269,7 +212,7 @@ class EngineManager:
         timeout = httpx.Timeout(connect=10, read=None, write=30, pool=30)
         try:
             async with httpx.AsyncClient(timeout=timeout) as client:
-                async with client.stream("POST", f"{self.config.engine_url}/v1/chat/completions", json={**payload, "stream": True}) as response:
+                async with client.stream("POST", f"{self.config.engine_url}/v1/chat/completions", json={**payload, "stream": True}, headers=self.inference_headers) as response:
                     if response.status_code >= 400:
                         body = await response.aread()
                         text = body.decode(errors="replace")[:2000]
@@ -293,24 +236,24 @@ class EngineManager:
         json_body: Any = None,
         retries: int | None = None,
     ) -> Any:
-        attempts = max(1, retries if retries is not None else self.config.engine_proxy_retries)
-        timeout = httpx.Timeout(self.config.engine_connect_timeout_seconds, read=15)
+        attempts = max(1, retries if retries is not None else self.config.engine_proxy_retries) if method == "GET" else 1
+        timeout = httpx.Timeout(self.config.engine_connect_timeout_seconds, read=self.config.engine_stop_timeout_seconds + 60 if method != "GET" else 15)
         last_error: Exception | None = None
         for attempt in range(attempts):
             try:
                 async with httpx.AsyncClient(timeout=timeout) as client:
-                    response = await client.request(method, f"{base_url.rstrip('/')}{path}", json=json_body)
+                    response = await client.request(method, f"{base_url.rstrip('/')}{path}", json=json_body, headers=self.control_headers if base_url == self.config.freetoken_control_url else self.inference_headers)
                 if response.status_code >= 500 and attempt + 1 < attempts:
                     await asyncio.sleep(min(2 ** attempt, 4))
                     continue
                 if response.status_code >= 400:
-                    raise RuntimeError(response.text[:2000] or f"HTTP {response.status_code}")
+                    raise RuntimeError(f"{method} {path}: HTTP {response.status_code}: {response.text[:2000]}")
                 return response.json()
             except (httpx.HTTPError, RuntimeError, ValueError) as exc:
                 last_error = exc
                 if attempt + 1 < attempts:
                     await asyncio.sleep(min(2 ** attempt, 4))
-        raise RuntimeError(str(last_error or "request failed"))
+        raise RuntimeError(f"{method} {path}: {type(last_error).__name__}: {last_error}") from last_error
 
     async def _control_request(self, method: str, path: str, json_body: Any = None) -> Any:
         return await self._request_json(method, self.config.freetoken_control_url, path, json_body)

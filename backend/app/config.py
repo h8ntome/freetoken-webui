@@ -17,11 +17,12 @@ class Settings(BaseSettings):
     # configurable so the control plane also works with a separately deployed
     # FreeToken service.
     freetoken_url: str = "http://freetoken:1919"
-    freetoken_control_url: str = "http://freetoken:1918"
-    freetoken_host: str = "127.0.0.1"
+    freetoken_control_url: str = "http://freetoken:1900"
     freetoken_port: int = 1919
     freetoken_external_url: str = "http://127.0.0.1:1919"
-    freetoken_executable: str = "ft"
+    freetoken_daemon_token: str | None = None
+    freetoken_api_key: str | None = None
+    freetoken_models_dir: Path = Path("/models")
     freetoken_extra_args: str = ""
     models_dir: Path = Path("./models")
     allowed_import_dirs: str = ""
@@ -37,6 +38,11 @@ class Settings(BaseSettings):
     engine_stop_timeout_seconds: int = 20
     engine_connect_timeout_seconds: float = 5.0
     engine_proxy_retries: int = 3
+
+    @field_validator("hf_token", "freetoken_daemon_token", "freetoken_api_key", mode="before")
+    @classmethod
+    def normalize_token(cls, value):
+        return str(value).strip() or None if value is not None else None
 
     @field_validator("models_dir", "data_dir", mode="before")
     @classmethod

@@ -36,7 +36,7 @@ export default function Dashboard({
     external = engine.mode === "external",
     gpu = metrics?.system.gpus[0],
     runtime = metrics?.runtime || {},
-    tps = runtime.throughput?.decode_tps || 0;
+    tps = runtime.throughput?.decode_tps;
   const action = async (kind: "unload" | "restart") => {
     try {
       await post(`/api/engine/${kind}`);
@@ -150,9 +150,9 @@ export default function Dashboard({
         <Metric
           icon={<CircleGauge />}
           label="Decode speed"
-          value={`${tps.toFixed(1)}`}
+          value={tps?.toFixed(1) ?? "—"}
           unit="tok/s"
-          detail={`${runtime.throughput?.prefill_tps || 0} prefill tok/s`}
+          detail={`${runtime.throughput?.prefill_tps ?? "—"} prefill tok/s`}
         />
         <Metric
           icon={<Database />}
@@ -162,13 +162,13 @@ export default function Dashboard({
           percent={gpu?.memoryPercent}
           detail={
             gpu
-              ? `${gpu.temperatureC}°C · ${gpu.powerWatts} W`
+              ? "Engine GPU; live utilization unavailable"
               : "NVML unavailable"
           }
         />
         <Metric
           icon={<Server />}
-          label="System memory"
+          label="WebUI host memory"
           value={metrics ? formatBytes(metrics.system.ram.usedBytes) : "—"}
           unit={
             metrics ? `/ ${formatBytes(metrics.system.ram.totalBytes)}` : ""
@@ -236,16 +236,16 @@ export default function Dashboard({
           </header>
           <div className="request-numbers">
             <div>
-              <b>{runtime.requests?.active || 0}</b>
+              <b>{runtime.requests?.active ?? "—"}</b>
               <span>ACTIVE</span>
             </div>
             <div>
-              <b>{runtime.requests?.completed || 0}</b>
+              <b>{runtime.requests?.completed ?? "—"}</b>
               <span>COMPLETED</span>
             </div>
             <div>
               <b>
-                {runtime.requests?.p95_ms || 0}
+                {runtime.requests?.p95_ms ?? "—"}
                 <em>ms</em>
               </b>
               <span>P95 LATENCY</span>

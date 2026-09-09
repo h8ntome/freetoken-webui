@@ -12,3 +12,5 @@ hf-cache/
 *.log
 .DS_Store
 
+
+freetoken-state/

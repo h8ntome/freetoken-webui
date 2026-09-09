@@ -21,7 +21,7 @@ ENV PYTHONUNBUFFERED=1 \
     HF_HOME=/hf-cache \
     FREETOKEN_MODE=managed \
     FREETOKEN_URL=http://freetoken:1919 \
-    FREETOKEN_CONTROL_URL=http://freetoken:1918 \
+    FREETOKEN_CONTROL_URL=http://freetoken:1900 \
     MODELS_DIR=/models \
     DATA_DIR=/data
 RUN apt-get update \

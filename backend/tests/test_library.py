@@ -101,7 +101,7 @@ def test_classify_search_result():
         siblings=None,
     )
     assert res["compatibility"] == "unsupported"
-    assert "not a text-generation" in res["unsupportedReason"]
+    assert "not supported for text generation" in res["unsupportedReason"]
 
     # 3. GGUF-only repository without safetensors
     class Sibling:
@@ -124,8 +124,8 @@ def test_classify_search_result():
         tags=["safetensors", "qwen"],
         siblings=[Sibling("model.safetensors"), Sibling("config.json")],
     )
-    assert res["compatibility"] == "likely"
-    assert res["architecture"] == "qwen"
+    assert res["compatibility"] == "unknown"
+    assert res["architecture"] is None
     assert res["hasSafetensors"] is True
 
     # 5. Unknown text model with safetensors but unsupported/unmatched arch
