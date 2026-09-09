@@ -14,6 +14,7 @@ jobs:
         working-directory: backend
       - name: Validate Compose definitions
         run: |
+          cp .env.example .env
           docker compose config -q
           docker compose -f docker-compose.dev.yml config -q
           docker compose -f docker-compose.external.yml config -q
