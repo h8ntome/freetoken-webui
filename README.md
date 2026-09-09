@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="frontend/public/mark.svg" width="104" height="104" alt="FreeToken Web logo">
+  <img src="frontend/public/freetoken-webui-logo.png" width="640" alt="FreeToken Web logo">
 </p>
 
 <h1 align="center">FreeToken Web</h1>
