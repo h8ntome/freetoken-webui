@@ -205,7 +205,9 @@ class EngineManager:
                 return
             await asyncio.sleep(.75)
         if proc.returncode is None and self._state != "ready":
+            self._state = "failed"
             self._error = "FreeToken did not become ready before the configured timeout"
+            self._append_log("error", self._error)
 
     async def refresh(self) -> dict[str, Any]:
         try:
