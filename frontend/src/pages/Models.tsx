@@ -58,7 +58,7 @@ export default function Models({ engine, models, refresh, toast }: { engine: Eng
 
   if (!managed) return <div className="page models-page">
     <div className="page-heading"><div><div className="eyebrow">EXTERNAL RUNTIME / CONNECTION ONLY</div><h1>Models</h1><p>The connected FreeToken server owns its models and lifecycle.</p></div><Badge tone="warn">External mode</Badge></div>
-    <section className="mode-boundary"><span><Info /></span><div><small>MANAGEMENT BOUNDARY</small><h2>Model controls live on the external server</h2><p>FreeToken Web can chat with and monitor the active external model, but it cannot safely download, load, unload, switch, or delete models on a separately managed host.</p><a href="#settings">Review connection settings</a></div></section>
+    <section className="mode-boundary"><span><Info /></span><div><small>MANAGEMENT BOUNDARY</small><h2>Model controls live on the external server</h2><p>FreeToken WebUI can chat with and monitor the active external model, but it cannot safely download, load, unload, switch, or delete models on a separately managed host.</p><a href="#settings">Review connection settings</a></div></section>
   </div>;
 
   return <div className="page models-page">

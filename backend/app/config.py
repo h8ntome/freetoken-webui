@@ -10,9 +10,14 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore", case_sensitive=False)
 
-    app_name: str = "FreeToken Web"
+    app_name: str = "FreeToken WebUI"
     web_port: int = 3000
     freetoken_mode: Literal["managed", "external"] = "managed"
+    # The managed runtime is a separate Compose service.  Keep the URL
+    # configurable so the control plane also works with a separately deployed
+    # FreeToken service.
+    freetoken_url: str = "http://freetoken:1919"
+    freetoken_control_url: str = "http://freetoken:1918"
     freetoken_host: str = "127.0.0.1"
     freetoken_port: int = 1919
     freetoken_external_url: str = "http://127.0.0.1:1919"
@@ -30,6 +35,8 @@ class Settings(BaseSettings):
     metrics_interval_seconds: float = 2.0
     engine_ready_timeout_seconds: int = 900
     engine_stop_timeout_seconds: int = 20
+    engine_connect_timeout_seconds: float = 5.0
+    engine_proxy_retries: int = 3
 
     @field_validator("models_dir", "data_dir", mode="before")
     @classmethod
@@ -40,8 +47,7 @@ class Settings(BaseSettings):
     def engine_url(self) -> str:
         if self.freetoken_mode == "external":
             return self.freetoken_external_url.rstrip("/")
-        connect_host = "127.0.0.1" if self.freetoken_host in {"0.0.0.0", "::"} else self.freetoken_host
-        return f"http://{connect_host}:{self.freetoken_port}"
+        return self.freetoken_url.rstrip("/")
 
     @property
     def import_roots(self) -> tuple[Path, ...]:

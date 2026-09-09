@@ -32,7 +32,10 @@ export default function App() {
     try {
       const [e,m,mt]=await Promise.all([api<EngineStatus>('/api/engine/status'),api<{items:Model[]}>('/api/models'),api<Metrics>('/api/metrics')])
       setEngine(e);setModels(m.items);setMetrics(mt)
-    } catch {}
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unable to reach the WebUI backend'
+      setEngine(current => ({...current, state: 'failed', error: message}))
+    }
   },[])
   useEffect(()=>{api<any>('/api/auth/me').then(v=>{setMe(v);setCsrf(v.csrfToken)}).catch(()=>setMe(null)).finally(()=>setAuthChecked(true))},[])
   useEffect(()=>{if(!me)return;refresh();const id=setInterval(refresh,2500);return()=>clearInterval(id)},[me,refresh])
@@ -56,4 +59,3 @@ export default function App() {
     {notice&&<div className={notice.bad?'toast bad':'toast'}>{notice.bad?'!':'✓'} {notice.text}</div>}
   </div>
 }
-

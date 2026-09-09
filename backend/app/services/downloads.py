@@ -82,10 +82,7 @@ class DownloadManager:
         except DownloadCancelled:
             self.db.update_job(job_id, state="cancelled", progress={"phase": "cancelled"})
         except Exception as exc:
-            message = str(exc)
-            if "401" in message or "gated" in message.lower():
-                message = "This repository is gated or private. Accept its terms and configure a valid HF_TOKEN."
-            self.db.update_job(job_id, state="failed", error=message, progress={"phase": "failed"})
+            self.db.update_job(job_id, state="failed", error=_hugging_face_error(exc), progress={"phase": "failed"})
         finally:
             with self._lock:
                 self._cancel.pop(job_id, None)
@@ -110,7 +107,7 @@ class DownloadManager:
             with client.stream("GET", url) as response:
                 if response.status_code not in (200, 206):
                     response.read()
-                    raise RuntimeError(f"Hugging Face returned HTTP {response.status_code} for {filename}")
+                    raise RuntimeError(_hugging_face_status(response.status_code, filename))
                 if existing and response.status_code == 200:
                     existing = 0
                 mode = "ab" if existing and response.status_code == 206 else "wb"
@@ -133,3 +130,33 @@ class DownloadManager:
         if expected and partial.stat().st_size != expected:
             raise RuntimeError(f"Size mismatch for {filename}: expected {expected:,} bytes, received {partial.stat().st_size:,}")
         partial.replace(final)
+
+
+def _hugging_face_status(status: int, filename: str) -> str:
+    if status in {401, 403}:
+        return (
+            f"Hugging Face denied {filename}. This repository may be gated or private; "
+            "accept its terms and configure a valid HF_TOKEN."
+        )
+    if status == 404:
+        return f"Hugging Face could not find {filename} at the requested revision."
+    if status == 429:
+        return "Hugging Face rate limit reached. Retry this download later."
+    if status >= 500:
+        return "Hugging Face is temporarily unavailable. Retry the download shortly."
+    return f"Hugging Face returned HTTP {status} for {filename}."
+
+
+def _hugging_face_error(exc: Exception) -> str:
+    response = getattr(exc, "response", None)
+    status = getattr(response, "status_code", None) or getattr(exc, "status_code", None)
+    if status:
+        return _hugging_face_status(int(status), "the requested repository")
+    if isinstance(exc, (httpx.TimeoutException, TimeoutError)):
+        return "Hugging Face did not respond in time. Check network access and retry the download."
+    if isinstance(exc, (httpx.ConnectError, httpx.NetworkError, OSError)):
+        return "The Web UI could not reach Hugging Face. Check DNS and outbound network access."
+    text = str(exc).lower()
+    if "gated" in text or "private" in text or "401" in text or "403" in text:
+        return "This repository is gated or private. Accept its terms and configure a valid HF_TOKEN."
+    return "The Hugging Face download failed unexpectedly. Retry the job and check the Web UI logs."

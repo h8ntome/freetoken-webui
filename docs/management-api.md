@@ -1,6 +1,6 @@
 # Management API
 
-All `/api/*` routes except login require an authenticated session when authentication is enabled. Mutations also require the `X-CSRF-Token` returned by `/api/auth/me`. The native inference API remains FreeToken's own API on port 1919.
+All `/api/*` routes except login require an authenticated session when authentication is enabled. Mutations also require the `X-CSRF-Token` returned by `/api/auth/me`. The native inference API remains FreeToken's own API on port 1919. In Managed Mode, lifecycle requests are proxied to the separate GPU-enabled `freetoken` service over its private control endpoint; the Web UI process never launches `ft` itself.
 
 Core routes:
 
@@ -13,4 +13,3 @@ Core routes:
 - `GET /api/api-info`
 
 Long-running downloads return a job immediately. Poll `GET /api/jobs/:id`; the states are `queued`, `running`, `cancelling`, `cancelled`, `completed`, and `failed`.
-

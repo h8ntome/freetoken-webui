@@ -45,20 +45,12 @@ class EngineManager:
             self._state = "external"
             await self.refresh()
             return
-        persisted = self._read_state()
-        pid = persisted.get("pid")
-        if pid and self._is_owned_process(pid, persisted.get("model")):
-            self._state = "starting"
-            self._model_path = persisted.get("model")
-            self._model_name = Path(self._model_path).name if self._model_path else None
-            self._started_at = persisted.get("startedAt")
-            self._task = asyncio.create_task(self._watch_adopted(pid))
-            await self.refresh()
-        else:
-            self._write_state({})
-            if self._port_open():
-                self._state = "external"
-                self._error = "A FreeToken-compatible service already owns the configured port. Managed actions are disabled to protect it."
+        # Managed mode owns the *service contract*, not a child process.  The
+        # FreeToken process lives in the dedicated GPU service and is reached
+        # over the Compose network.
+        self._write_state({})
+        self._state = "stopped"
+        await self.refresh()
 
     def _read_state(self) -> dict[str, Any]:
         try:
@@ -94,23 +86,21 @@ class EngineManager:
         async with self._lock:
             if self._state in {"starting", "loading", "stopping"}:
                 raise EngineConflict(f"Engine is currently {self._state}")
-            if self._process and self._process.returncode is None:
-                raise EngineConflict("A managed engine is already running; use Switch Model")
-            if self._port_open():
-                raise EngineConflict("The inference port is already occupied; refusing to replace an unowned process")
-            argv = self._build_command(model_path, options or {})
             self._state, self._error, self._exit_code = "starting", None, None
             self._intentional_stop = False
             self._model_path, self._model_name = str(model_path), model_path.name
             self._started_at = time.time()
             self._append_log("event", f"Starting FreeToken for {model_path.name}")
             try:
-                self._process = await asyncio.create_subprocess_exec(*argv, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT, stdin=asyncio.subprocess.DEVNULL, start_new_session=True)
-            except FileNotFoundError as exc:
-                self._state, self._error = "failed", f"FreeToken executable not found: {self.config.freetoken_executable}"
+                await self._control_request(
+                    "POST",
+                    "/load",
+                    {"model": str(model_path), "options": options or {}},
+                )
+            except Exception as exc:
+                self._state, self._error = "failed", f"Could not start the FreeToken service: {exc}"
                 raise RuntimeError(self._error) from exc
-            self._write_state({"pid": self._process.pid, "model": str(model_path), "startedAt": self._started_at, "port": self.config.freetoken_port})
-            self._task = asyncio.create_task(self._supervise(self._process))
+            self._write_state({"model": str(model_path), "startedAt": self._started_at})
         return self.status()
 
     def _build_command(self, model_path: Path, options: dict[str, Any]) -> list[str]:
@@ -136,33 +126,30 @@ class EngineManager:
         if self.config.freetoken_mode != "managed" or self._state == "external":
             raise EngineConflict("This control plane does not own the engine")
         async with self._lock:
-            proc = self._process
-            persisted = self._read_state()
-            pid = proc.pid if proc and proc.returncode is None else persisted.get("pid")
-            directly_owned = bool(proc and proc.returncode is None)
-            if not pid or (not directly_owned and not self._is_owned_process(pid, self._model_path)):
-                self._state, self._process = "stopped", None
+            # Kept for safely draining a process adopted by an older image
+            # during an upgrade. New managed starts always use the remote
+            # supervisor and never populate ``_process``.
+            if self._process and self._process.returncode is None:
+                proc = self._process
+                self._state = "stopping"
+                self._intentional_stop = True
+                try:
+                    os.killpg(proc.pid, signal.SIGTERM)
+                    await asyncio.wait_for(proc.wait(), timeout=self.config.engine_stop_timeout_seconds)
+                except (ProcessLookupError, asyncio.TimeoutError):
+                    if proc.returncode is None:
+                        os.killpg(proc.pid, signal.SIGKILL)
+                self._state, self._process, self._health = "stopped", None, {}
                 self._write_state({})
                 return self.status()
             self._state = "stopping"
             self._intentional_stop = True
             self._append_log("event", "Stopping FreeToken gracefully")
             try:
-                os.killpg(pid, signal.SIGTERM)
-            except ProcessLookupError:
-                pass
-        deadline = time.monotonic() + self.config.engine_stop_timeout_seconds
-        def still_running() -> bool:
-            return proc.returncode is None if directly_owned and proc else self._is_owned_process(pid, self._model_path)
-
-        while time.monotonic() < deadline and still_running():
-            await asyncio.sleep(.25)
-        if still_running():
-            self._append_log("warning", "Graceful stop timed out; terminating the owned process group")
-            try:
-                os.killpg(pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
+                await self._control_request("POST", "/unload")
+            except Exception as exc:
+                self._state, self._error = "failed", f"Could not stop the FreeToken service: {exc}"
+                raise RuntimeError(self._error) from exc
         self._state, self._process, self._health = "stopped", None, {}
         self._write_state({})
         return self.status()
@@ -211,10 +198,7 @@ class EngineManager:
 
     async def refresh(self) -> dict[str, Any]:
         try:
-            async with httpx.AsyncClient(timeout=1.5) as client:
-                response = await client.get(f"{self.config.engine_url}/health")
-                response.raise_for_status()
-                doc = response.json()
+            doc = await self._request_json("GET", self.config.engine_url, "/health")
             self._health = doc
             if doc.get("status") == "ok":
                 self._state = "ready" if self.config.freetoken_mode == "managed" and self._state != "external" else "external"
@@ -222,12 +206,17 @@ class EngineManager:
                 self._error = None
             elif doc.get("status") == "loading":
                 self._state = "loading"
+            elif doc.get("status") == "stopped":
+                self._state = "stopped" if self.config.freetoken_mode == "managed" else "external"
+                self._error = None
             elif doc.get("status") == "error":
                 self._state, self._error = "failed", doc.get("message") or "FreeToken reported a fatal error"
-        except Exception:
+        except Exception as exc:
+            self._health = {}
             if self.config.freetoken_mode == "external":
-                self._health = {}
-                self._error = f"Cannot reach the external FreeToken server at {self.config.engine_url}"
+                self._error = f"Cannot reach the external FreeToken server at {self.config.engine_url}: {exc}"
+            elif self._state not in {"starting", "loading"}:
+                self._error = f"Cannot reach the managed FreeToken service at {self.config.engine_url}: {exc}"
         return self.status()
 
     def status(self) -> dict[str, Any]:
@@ -238,7 +227,7 @@ class EngineManager:
         owned = managed and self._state != "external"
         return {
             "state": self._state, "mode": self.config.freetoken_mode, "owned": owned,
-            "model": self._model_name, "modelPath": self._model_path, "pid": self._process.pid if self._process else self._read_state().get("pid"),
+            "model": self._model_name, "modelPath": self._model_path, "pid": None,
             "startedAt": self._started_at, "exitCode": self._exit_code, "error": self._error,
             "phase": self._health.get("phase"), "progress": {"doneBytes": progress.get("done_bytes", 0), "totalBytes": total, "percent": round(progress.get("done_bytes", 0) / total * 100, 1) if total else None},
             "health": self._health,
@@ -264,11 +253,7 @@ class EngineManager:
         return errors[-1][-1000:] if errors else None
 
     async def proxy_json(self, method: str, path: str, json_body: Any = None) -> Any:
-        async with httpx.AsyncClient(timeout=15) as client:
-            response = await client.request(method, f"{self.config.engine_url}{path}", json=json_body)
-        if response.status_code >= 400:
-            raise RuntimeError(response.text[:2000])
-        return response.json()
+        return await self._request_json(method, self.config.engine_url, path, json_body, retries=1)
 
     async def chat_stream(self, payload: dict[str, Any]) -> AsyncIterator[bytes]:
         timeout = httpx.Timeout(connect=10, read=None, write=30, pool=30)
@@ -279,3 +264,33 @@ class EngineManager:
                     raise RuntimeError(body.decode(errors="replace")[:2000])
                 async for chunk in response.aiter_raw():
                     yield chunk
+
+    async def _request_json(
+        self,
+        method: str,
+        base_url: str,
+        path: str,
+        json_body: Any = None,
+        retries: int | None = None,
+    ) -> Any:
+        attempts = max(1, retries if retries is not None else self.config.engine_proxy_retries)
+        timeout = httpx.Timeout(self.config.engine_connect_timeout_seconds, read=15)
+        last_error: Exception | None = None
+        for attempt in range(attempts):
+            try:
+                async with httpx.AsyncClient(timeout=timeout) as client:
+                    response = await client.request(method, f"{base_url.rstrip('/')}{path}", json=json_body)
+                if response.status_code >= 500 and attempt + 1 < attempts:
+                    await asyncio.sleep(min(2 ** attempt, 4))
+                    continue
+                if response.status_code >= 400:
+                    raise RuntimeError(response.text[:2000] or f"HTTP {response.status_code}")
+                return response.json()
+            except (httpx.HTTPError, RuntimeError, ValueError) as exc:
+                last_error = exc
+                if attempt + 1 < attempts:
+                    await asyncio.sleep(min(2 ** attempt, 4))
+        raise RuntimeError(str(last_error or "request failed"))
+
+    async def _control_request(self, method: str, path: str, json_body: Any = None) -> Any:
+        return await self._request_json(method, self.config.freetoken_control_url, path, json_body)

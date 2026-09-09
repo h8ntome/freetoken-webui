@@ -1,2 +1,1 @@
-"""FreeToken Web control plane."""
-
+"""FreeToken WebUI control plane."""

@@ -1,19 +1,49 @@
 services:
-  freetoken-web:
-    image: ghcr.io/h8ntome/freetoken-webui:${IMAGE_TAG:-latest}
+  freetoken:
+    container_name: freetoken
+    image: "${FREETOKEN_IMAGE:-ghcr.io/h8ntome/freetoken:latest}"
     pull_policy: always
     restart: unless-stopped
     init: true
     gpus: all
     ipc: host
-    ports:
-      - "${WEB_BIND_ADDRESS:-0.0.0.0}:${WEB_PORT:-3000}:3000"
-      - "${API_BIND_ADDRESS:-0.0.0.0}:${FREETOKEN_PORT:-1919}:1919"
     environment:
-      FREETOKEN_MODE: managed
-      WEB_PORT: "3000"
       FREETOKEN_HOST: "0.0.0.0"
       FREETOKEN_PORT: "1919"
+      FREETOKEN_CONTROL_PORT: "1918"
+      HF_HOME: /hf-cache
+      FREETOKEN_EXTRA_ARGS: "${FREETOKEN_EXTRA_ARGS:-}"
+      ENGINE_STOP_TIMEOUT_SECONDS: "${ENGINE_STOP_TIMEOUT_SECONDS:-20}"
+    volumes:
+      - "${MODELS_PATH:-./models}:/models"
+      - "${HF_CACHE_PATH:-./hf-cache}:/hf-cache"
+    expose:
+      - "1918"
+      - "1919"
+    ports:
+      - "${API_BIND_ADDRESS:-0.0.0.0}:${FREETOKEN_PORT:-1919}:1919"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:1918/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+
+  freetoken-webui:
+    container_name: freetoken-webui
+    image: "ghcr.io/h8ntome/freetoken-webui:${IMAGE_TAG:-latest}"
+    pull_policy: always
+    restart: unless-stopped
+    init: true
+    depends_on:
+      freetoken:
+        condition: service_healthy
+        restart: true
+    environment:
+      FREETOKEN_MODE: managed
+      FREETOKEN_URL: "http://freetoken:1919"
+      FREETOKEN_CONTROL_URL: "http://freetoken:1918"
+      WEB_PORT: "3000"
       MODELS_DIR: /models
       DATA_DIR: /data
       HF_HOME: /hf-cache
@@ -23,11 +53,13 @@ services:
       ADMIN_PASSWORD: "${ADMIN_PASSWORD:-}"
       SECURE_COOKIES: "${SECURE_COOKIES:-false}"
       PUBLIC_API_BASE_URL: "${PUBLIC_API_BASE_URL:-}"
-      FREETOKEN_EXTRA_ARGS: "${FREETOKEN_EXTRA_ARGS:-}"
-      ALLOWED_IMPORT_DIRS: "${ALLOWED_IMPORT_DIRS:-}"
       METRICS_INTERVAL_SECONDS: "${METRICS_INTERVAL_SECONDS:-2}"
+      ALLOWED_IMPORT_DIRS: "${ALLOWED_IMPORT_DIRS:-}"
       ENGINE_READY_TIMEOUT_SECONDS: "${ENGINE_READY_TIMEOUT_SECONDS:-900}"
       ENGINE_STOP_TIMEOUT_SECONDS: "${ENGINE_STOP_TIMEOUT_SECONDS:-20}"
+      ENGINE_PROXY_RETRIES: "${ENGINE_PROXY_RETRIES:-3}"
+    ports:
+      - "${WEB_BIND_ADDRESS:-0.0.0.0}:${WEB_PORT:-3000}:3000"
     volumes:
       - "${MODELS_PATH:-./models}:/models"
       - "${DATA_PATH:-./data}:/data"
@@ -36,5 +68,5 @@ services:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:3000/healthz"]
       interval: 20s
       timeout: 5s
-      retries: 3
+      retries: 5
       start_period: 20s
