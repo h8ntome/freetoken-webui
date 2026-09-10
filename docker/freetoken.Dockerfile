@@ -26,11 +26,12 @@ RUN python3 -m venv /opt/venv \
     && /opt/venv/bin/pip install --no-cache-dir "uv==${UV_VERSION}" \
     && uv pip install --python /opt/venv/bin/python --no-cache "freetoken[accel]==${FREETOKEN_VERSION}" \
     && /opt/venv/bin/ft --version \
-    && test -f /opt/venv/lib/python3.12/site-packages/nvidia/cu13/include/curand.h \
+    && /opt/venv/bin/pip uninstall -y uv
+
+RUN test -f /opt/venv/lib/python3.12/site-packages/nvidia/cu13/include/curand.h \
     && test -f /opt/venv/lib/python3.12/site-packages/nvidia/cu13/include/cublas_v2.h \
     && test -f /opt/venv/lib/python3.12/site-packages/nvidia/cu13/include/nvrtc.h \
-    && test -f /opt/venv/lib/python3.12/site-packages/nvidia/nvshmem/include/nvshmem.h \
-    && /opt/venv/bin/pip uninstall -y uv
+    && test -f /opt/venv/lib/python3.12/site-packages/nvidia/nvshmem/include/nvshmem.h
 
 ENV CPATH=/opt/venv/lib/python3.12/site-packages/nvidia/cu13/include:/opt/venv/lib/python3.12/site-packages/nvidia/nvshmem/include
 
