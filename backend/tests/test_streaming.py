@@ -7,10 +7,12 @@ from app import main
 def test_real_http_stream_contract_preserves_split_unicode_and_persistence(monkeypatch):
     async def stream(payload):
         assert payload['messages'][-1]['content'] == 'hello'
+        assert payload['stream_options'] == {'include_usage': True}
         event = ('data: ' + json.dumps({'choices':[{'delta':{'content':'héllo 世界'}}]}, ensure_ascii=False) + '\n\n').encode()
         # Splits inside a multi-byte code point and inside the SSE delimiter.
         for byte in event:
             yield bytes([byte])
+        yield b'data: {"choices":[],"usage":{"prompt_tokens":2,"completion_tokens":3,"total_tokens":5}}\n\n'
         yield b'data: [DONE]\n\n'
     monkeypatch.setattr(main.engine, 'chat_stream', stream)
     client = TestClient(main.app)
@@ -19,6 +21,7 @@ def test_real_http_stream_contract_preserves_split_unicode_and_persistence(monke
     assert response.status_code == 200 and '[DONE]' in response.text
     stored = client.get('/api/chats/'+chat['id']).json()
     assert stored['messages'][-1]['content'] == 'héllo 世界'
+    assert stored['messages'][-1]['usage']['total_tokens'] == 5
 
 
 def test_stream_failure_is_visible_and_partial_answer_is_saved(monkeypatch):

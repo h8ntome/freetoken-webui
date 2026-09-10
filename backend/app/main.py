@@ -391,7 +391,11 @@ async def chat_completion(body: ChatRequest, _: Principal = Depends(require_csrf
     user = body.messages[-1] if body.messages else None
     if user and user.get("role") == "user":
         database.execute("INSERT INTO messages VALUES (?,?,?,?,?,?,?)", (str(uuid.uuid4()), body.chatId, "user", str(user.get("content", "")), None, None, time.time()))
-    payload = {"model": body.model or engine.status().get("model"), "messages": body.messages}
+    payload = {
+        "model": body.model or engine.status().get("model"),
+        "messages": body.messages,
+        "stream_options": {"include_usage": True},
+    }
     for key in ("temperature", "top_p", "max_tokens", "chat_template_kwargs"):
         value = getattr(body, key)
         if value is not None:
