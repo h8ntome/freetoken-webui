@@ -14,9 +14,10 @@ docker build --pull -f docker/Dockerfile -t freetoken-webui:test .
 docker build --pull -f docker/freetoken.Dockerfile -t freetoken-upstream:test .
 ```
 
-The engine image build verifies that `nvcc`, a C++ compiler, and the Python
-headers are present. Those are runtime requirements because FlashInfer can
-JIT-compile GPU-specific kernels when a model is first loaded.
+The engine image build verifies that `nvcc`, a C++ compiler, Python headers, and
+the CUDA library headers supplied with the accelerator wheels are present.
+Those are runtime requirements because FlashInfer can JIT-compile GPU-specific
+kernels when a model is first loaded or first used for sampling.
 
 ## Live NVIDIA acceptance test
 
