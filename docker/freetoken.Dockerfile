@@ -4,7 +4,6 @@ ARG UV_VERSION=0.8.22
 ARG FREETOKEN_VERSION=0.1.2
 ENV DEBIAN_FRONTEND=noninteractive \
     PATH=/opt/venv/bin:$PATH \
-    CPATH=/opt/venv/lib/python3.12/site-packages/nvidia/cu13/include:/opt/venv/lib/python3.12/site-packages/nvidia/nvshmem/include \
     PYTHONUNBUFFERED=1 \
     FREETOKEN_PORT=1919 \
     FREETOKEN_DAEMON_DIR=/state
@@ -32,6 +31,8 @@ RUN python3 -m venv /opt/venv \
     && test -f /opt/venv/lib/python3.12/site-packages/nvidia/cu13/include/nvrtc.h \
     && test -f /opt/venv/lib/python3.12/site-packages/nvidia/nvshmem/include/nvshmem.h \
     && /opt/venv/bin/pip uninstall -y uv
+
+ENV CPATH=/opt/venv/lib/python3.12/site-packages/nvidia/cu13/include:/opt/venv/lib/python3.12/site-packages/nvidia/nvshmem/include
 
 # No patched FreeToken code or custom lifecycle server. Upstream owns ft serve.
 EXPOSE 1900 1919
