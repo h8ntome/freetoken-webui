@@ -1,6 +1,7 @@
 import { FormEvent, useEffect, useRef, useState } from "react";
 import {
   Bot,
+  BrainCircuit,
   ChevronDown,
   CornerDownLeft,
   Menu,
@@ -14,7 +15,7 @@ import {
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { api, del, formatTime, patch, post } from "../lib/api";
-import { Badge, CopyButton } from "../components/ui";
+import { Badge, CopyButton, Modal } from "../components/ui";
 import type { ChatSummary, EngineStatus, Message } from "../types";
 
 export default function Chat({
@@ -30,12 +31,14 @@ export default function Chat({
     [generating, setGenerating] = useState(false),
     [draft, setDraft] = useState(""),
     [showSettings, setShowSettings] = useState(false),
-    [historyOpen, setHistoryOpen] = useState(true);
+    [historyOpen, setHistoryOpen] = useState(true),
+    [confirmDelete, setConfirmDelete] = useState(false);
   const [settings, setSettings] = useState({
     temperature: 0.7,
     top_p: 0.95,
     max_tokens: 2048,
     systemPrompt: "",
+    enableThinking: true,
   });
   const abort = useRef<AbortController | null>(null),
     end = useRef<HTMLDivElement | null>(null);
@@ -58,6 +61,14 @@ export default function Chat({
     });
     await loadChats();
     await select(v.id);
+  };
+  const saveSettings = async () => {
+    if (!chat) return;
+    await patch(`/api/chats/${chat.id}`, {
+      systemPrompt: settings.systemPrompt,
+      settings,
+    });
+    toast("Chat settings saved");
   };
   useEffect(() => {
     loadChats().then(async () => {
@@ -84,7 +95,7 @@ export default function Chat({
     ];
     if (settings.systemPrompt)
       messages.unshift({ role: "system", content: settings.systemPrompt });
-    setChat({ ...chat, messages: [...(chat.messages || []), user] });
+    setChat({ ...chat, messages: [...(chat.messages || []), user], streamReasoning: "" });
     setInput("");
     setDraft("");
     setGenerating(true);
@@ -103,6 +114,7 @@ export default function Chat({
           temperature: settings.temperature,
           top_p: settings.top_p,
           max_tokens: settings.max_tokens,
+          chat_template_kwargs: { enable_thinking: settings.enableThinking },
         }),
         signal: abort.current.signal,
       });
@@ -166,7 +178,7 @@ export default function Chat({
       <aside className={historyOpen ? "chat-history" : "chat-history closed"}>
         <header>
           <strong>Conversations</strong>
-          <button className="icon-button" onClick={() => setHistoryOpen(false)}>
+          <button className="icon-button" aria-label="Close conversation history" title="Close conversation history" onClick={() => setHistoryOpen(false)}>
             <PanelLeftClose />
           </button>
         </header>
@@ -192,6 +204,8 @@ export default function Chat({
           {!historyOpen && (
             <button
               className="icon-button"
+              aria-label="Open conversation history"
+              title="Open conversation history"
               onClick={() => setHistoryOpen(true)}
             >
               <Menu />
@@ -208,6 +222,8 @@ export default function Chat({
             <Badge tone={ready ? "good" : "warn"}>{engine.state}</Badge>
             <button
               className="icon-button"
+              aria-label="Chat settings"
+              title="Chat settings"
               onClick={() => setShowSettings(!showSettings)}
             >
               <Settings2 />
@@ -215,7 +231,9 @@ export default function Chat({
             {chat && (
               <button
                 className="icon-button danger"
-                disabled={generating} onClick={() => remove(chat.id).catch(e => toast(e.message, true))}
+                aria-label="Delete conversation"
+                title="Delete conversation"
+                disabled={generating} onClick={() => setConfirmDelete(true)}
               >
                 <Trash2 />
               </button>
@@ -230,13 +248,6 @@ export default function Chat({
                 value={settings.systemPrompt}
                 onChange={(e) =>
                   setSettings({ ...settings, systemPrompt: e.target.value })
-                }
-                onBlur={() =>
-                  chat &&
-                  patch(`/api/chats/${chat.id}`, {
-                    systemPrompt: settings.systemPrompt,
-                    settings,
-                  }).catch(e => toast(e.message, true))
                 }
               />
             </label>
@@ -277,6 +288,21 @@ export default function Chat({
                 }
               />
             </label>
+            <label className="thinking-setting">
+              Model thinking
+              <span>
+                <input
+                  type="checkbox"
+                  checked={settings.enableThinking}
+                  onChange={(e) => setSettings({ ...settings, enableThinking: e.target.checked })}
+                />
+                Show reasoning when supported
+              </span>
+            </label>
+            <div className="chat-settings-actions">
+              <small>Applied to new messages</small>
+              <button className="secondary compact" onClick={() => saveSettings().catch(e => toast(e.message, true))}>Save settings</button>
+            </div>
           </div>
         )}
         <div className="messages">
@@ -323,9 +349,12 @@ export default function Chat({
                     {m.reasoning && (
                       <details className="reasoning">
                         <summary>
-                          Reasoning <ChevronDown />
+                          <BrainCircuit />
+                          <span>Thinking</span>
+                          <small>View reasoning</small>
+                          <ChevronDown />
                         </summary>
-                        <p>{m.reasoning}</p>
+                        <div className="reasoning-content">{m.reasoning}</div>
                       </details>
                     )}
                     <ReactMarkdown
@@ -346,12 +375,12 @@ export default function Chat({
                     </ReactMarkdown>
                     <div className="message-actions">
                       <CopyButton value={m.content} />
-
+                      {m.usage?.total_tokens != null && <span>{m.usage.total_tokens} tokens</span>}
                     </div>
                   </div>
                 </article>
               ))}
-              {draft && (
+              {(draft || chat?.streamReasoning || generating) && (
                 <article className="message assistant">
                   <div className="message-avatar">
                     <Bot />
@@ -362,16 +391,17 @@ export default function Chat({
                       <span className="typing">GENERATING</span>
                     </header>
                     {chat.streamReasoning && (
-                      <details className="reasoning">
+                      <details className="reasoning live" open>
                         <summary>
-                          Reasoning <ChevronDown />
+                          <BrainCircuit />
+                          <span>Thinking</span>
+                          <small>Live</small>
+                          <ChevronDown />
                         </summary>
-                        <p>{chat.streamReasoning}</p>
+                        <div className="reasoning-content">{chat.streamReasoning}</div>
                       </details>
                     )}
-                    <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                      {draft}
-                    </ReactMarkdown>
+                    {draft ? <ReactMarkdown remarkPlugins={[remarkGfm]}>{draft}</ReactMarkdown> : !chat.streamReasoning && <p className="thinking-placeholder">Formulating response…</p>}
                     <span className="cursor" />
                   </div>
                 </article>
@@ -396,6 +426,8 @@ export default function Chat({
                 : "Load a model to start chatting"
             }
             disabled={!ready}
+            rows={1}
+            aria-label="Message your local model"
           />
           <div>
             <span>
@@ -405,19 +437,22 @@ export default function Chat({
               <button
                 type="button"
                 className="stop"
+                aria-label="Stop generating"
+                title="Stop generating"
                 onClick={() => abort.current?.abort()}
               >
                 <Square />
                 Stop
               </button>
             ) : (
-              <button className="send" disabled={!ready || !input.trim()}>
+              <button className="send" aria-label="Send message" title="Send message" disabled={!ready || !input.trim()}>
                 <CornerDownLeft />
               </button>
             )}
           </div>
         </form>
       </section>
+      {confirmDelete && chat && <Modal title="Delete conversation?" onClose={() => setConfirmDelete(false)}><div className="confirm-body"><div className="warning-mark"><Trash2 /></div><p><strong>{chat.title}</strong> and its messages will be permanently removed.</p><footer><button className="secondary" onClick={() => setConfirmDelete(false)}>Keep conversation</button><button className="danger-button" onClick={() => remove(chat.id).then(() => setConfirmDelete(false)).catch(e => toast(e.message, true))}>Delete conversation</button></footer></div></Modal>}
     </div>
   );
 }
