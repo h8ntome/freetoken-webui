@@ -6,7 +6,6 @@ services:
       dockerfile: docker/freetoken.Dockerfile
     pull_policy: build
     restart: unless-stopped
-    init: true
     gpus: all
     ipc: host
     environment:
@@ -35,7 +34,6 @@ services:
       dockerfile: docker/Dockerfile
     pull_policy: build
     restart: unless-stopped
-    init: true
     depends_on:
       freetoken:
         condition: service_healthy

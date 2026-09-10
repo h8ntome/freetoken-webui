@@ -6,7 +6,6 @@ services:
       dockerfile: docker/Dockerfile
     pull_policy: build
     restart: unless-stopped
-    init: true
     environment:
       FREETOKEN_MODE: external
       FREETOKEN_API_KEY: "${FREETOKEN_API_KEY:-}"
