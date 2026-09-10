@@ -87,6 +87,18 @@ async def test_crash_and_disconnect_never_stay_ready(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_sigterm_from_intentional_stop_is_not_a_failure(tmp_path, monkeypatch):
+    mgr = manager(tmp_path)
+    async def stopped(*args):
+        return {'running': False, 'lastExitCode': -15, 'lastExitReason': 'stopped'}
+    monkeypatch.setattr(mgr, '_control_request', stopped)
+    status = await mgr.refresh()
+    assert status['state'] == 'stopped'
+    assert status['exitCode'] == -15
+    assert status['error'] is None
+
+
+@pytest.mark.asyncio
 async def test_mutations_are_not_retried_and_daemon_token_is_sent(tmp_path, monkeypatch):
     mgr = manager(tmp_path)
     mgr.config.freetoken_daemon_token = 'test-secret'

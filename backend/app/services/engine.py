@@ -136,7 +136,8 @@ class EngineManager:
                 self._started_at = time.time() - st.get("uptimeS", 0) if st.get("running") else None
                 if not st.get("running"):
                     self._health = {}
-                    self._state = "starting" if st.get("starting") else "stopping" if st.get("stopping") else "failed" if self._exit_code not in (None, 0) else "stopped"
+                    intentionally_stopped = st.get("lastExitReason") == "stopped"
+                    self._state = "starting" if st.get("starting") else "stopping" if st.get("stopping") else "failed" if self._exit_code not in (None, 0) and not intentionally_stopped else "stopped"
                     self._error = f"FreeToken exited with code {self._exit_code} ({st.get('lastExitReason')}). {self._runtime_error or 'See engine logs.'}" if self._state == "failed" else None
                     return self.status()
             doc = await self._request_json("GET", self.config.engine_url, "/health", retries=1)
