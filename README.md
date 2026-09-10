@@ -23,7 +23,7 @@ PyPI installation without modifying its files. See [verification notes](docs/ver
 ## Install
 
 Managed GPU service requirements follow upstream: Linux x86-64, supported NVIDIA
-GPU (Ampere or newer), driver r580+, Docker Compose 2.20+ with GPU support, and
+GPU (Ampere or newer), driver r580+, Docker Compose 2.30+ with GPU support, and
 NVIDIA Container Toolkit. The WebUI container itself needs no GPU or CUDA.
 
 ```bash
@@ -36,7 +36,9 @@ docker compose up -d
 Open `http://SERVER:3000`, then **Models → Discover → Download → Library → Load**.
 The normal Compose file builds both images from this checkout, avoiding old
 published images with incompatible control APIs. The initial CUDA/PyTorch build
-is large and can take time. Subsequent builds use Docker's layer cache.
+is large and can take time. It also includes the CUDA compiler and native headers
+that FlashInfer needs to JIT-compile GPU-specific kernels on first model load.
+Subsequent image builds use Docker's layer cache.
 
 The daemon is healthy while idle; the inference port becomes available after a
 model is loaded. `/healthz` checks WebUI liveness. `/readyz` checks daemon
@@ -150,7 +152,7 @@ See [`.env.example`](.env.example). Common settings:
 | `SECURE_COOKIES` | Enable with HTTPS when WebUI authentication is enabled |
 
 Advanced model options are passed as argv values to upstream, including GPU,
-`--memory-ratio`, `--moe-strategy`, and output/concurrency limits. Unknown options
+`--memory-ratio`, `--moe-backend`, and output/concurrency limits. Unknown options
 are rejected. The native API is available at `http://SERVER:1919/v1` after loading;
 see the API page for examples. A displayed URL is not proof of outside reachability.
 

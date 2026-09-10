@@ -9,8 +9,18 @@ ENV DEBIAN_FRONTEND=noninteractive \
     FREETOKEN_DAEMON_DIR=/state
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends python3 python3-pip python3-venv ca-certificates curl tini \
+    && apt-get install -y --no-install-recommends \
+        python3 python3-dev python3-pip python3-venv \
+        ca-certificates curl tini \
+        cuda-nvcc-13-0 \
     && rm -rf /var/lib/apt/lists/*
+
+# FlashInfer compiles GPU-specific kernels on first model load. Keep the CUDA
+# compiler and Python/native build headers in the runtime image, then fail the
+# image build early if that toolchain is incomplete.
+RUN command -v nvcc \
+    && command -v c++ \
+    && test -f /usr/include/python3.12/Python.h
 
 RUN python3 -m venv /opt/venv \
     && /opt/venv/bin/pip install --no-cache-dir "uv==${UV_VERSION}" \

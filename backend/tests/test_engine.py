@@ -24,7 +24,7 @@ def checkpoint(mgr):
 def test_options_are_native_args_and_unknown_rejected(tmp_path):
     mgr = manager(tmp_path)
     args = mgr._build_args(Path('/models/model;echo'), {'gpu': '0', 'memoryRatio': .8, 'moeBackend': 'hybrid'})
-    assert '--moe-strategy' in args and 'hybrid' in args
+    assert '--moe-backend' in args and '--moe-strategy' not in args and 'hybrid' in args
     assert '--gpu' in args and 'model;echo' in args
     with pytest.raises(ValueError, match='Unsupported engine options'):
         mgr._build_args(Path('/models/x'), {'evil': '$(id)'})

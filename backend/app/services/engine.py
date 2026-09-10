@@ -61,7 +61,7 @@ class EngineManager:
             "gpu": "--gpu", "maxRunningRequests": "--max-running-requests",
             "maxOutputTokens": "--max-output-tokens", "maxSequenceLength": "--max-seq-len-override",
             "maxPrefillLength": "--max-prefill-length", "memoryRatio": "--memory-ratio",
-            "moeBackend": "--moe-strategy", "kvTokens": "--num-tokens", "moeCacheRate": "--moe-cache-rate",
+            "moeBackend": "--moe-backend", "kvTokens": "--num-tokens", "moeCacheRate": "--moe-cache-rate",
         }
         if set(options) - allowed.keys():
             raise ValueError("Unsupported engine options: " + ", ".join(sorted(set(options) - allowed.keys())))
